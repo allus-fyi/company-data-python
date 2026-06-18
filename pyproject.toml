@@ -22,8 +22,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/allus/company-data-python"
-Repository = "https://github.com/allus/company-data-python"
+Homepage = "https://github.com/allus-fyi/company-data-python"
+Repository = "https://github.com/allus-fyi/company-data-python"
 
 [tool.setuptools.packages.find]
 where = ["src"]
