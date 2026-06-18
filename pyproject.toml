@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Reference Python SDK for the allus company-data API: typed, plaintext, slug-keyed conclusions with transparent decryption."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 authors = [{ name = "allme.fyi" }]
 keywords = ["allus", "allme", "company-data", "sdk"]
 dependencies = [
