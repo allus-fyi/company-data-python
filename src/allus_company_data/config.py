@@ -72,6 +72,15 @@ class Config:
     # "webhook_secret" shortcut, captured under the reserved key below.
     webhooks: dict = field(default_factory=dict)
 
+    # OPTIONAL — alternative webhook auth methods, mirroring the platform's
+    # per-webhook delivery auth. Configure AT MOST ONE family among
+    # hmac (webhooks/webhook_secret) | bearer | basic | header | none;
+    # two or more → ConfigError. See webhook_auth_method().
+    webhook_bearer_token: Optional[str] = None      # "Authorization: Bearer <token>"
+    webhook_basic: Optional[dict] = None            # {"username","password"} → Basic auth
+    webhook_header: Optional[dict] = None           # {"name","value"} → custom header
+    webhook_auth_none: bool = False                 # explicit opt-out — verify always true
+
     # Durable local buffer for the changes pump.
     cache_dir: str = "./allus-cache"
 
@@ -131,6 +140,50 @@ class Config:
         if webhooks:
             values["webhooks"] = webhooks
 
+        # Alternative webhook auth methods (file-config). Validate object shapes.
+        bearer = data.get("webhook_bearer_token")
+        if bearer:
+            values["webhook_bearer_token"] = str(bearer)
+
+        basic = data.get("webhook_basic")
+        if basic is not None:
+            if not isinstance(basic, dict) or not basic.get("username") or not basic.get("password"):
+                raise ConfigError(
+                    '"webhook_basic" must be an object with non-empty "username" and "password"'
+                )
+            values["webhook_basic"] = {
+                "username": str(basic["username"]),
+                "password": str(basic["password"]),
+            }
+
+        hdr = data.get("webhook_header")
+        if hdr is not None:
+            if not isinstance(hdr, dict) or not hdr.get("name") or not hdr.get("value"):
+                raise ConfigError(
+                    '"webhook_header" must be an object with non-empty "name" and "value"'
+                )
+            values["webhook_header"] = {"name": str(hdr["name"]), "value": str(hdr["value"])}
+
+        if data.get("webhook_auth_none") is True:
+            values["webhook_auth_none"] = True
+
+        # At most one webhook auth method may be configured.
+        present = []
+        if values.get("webhooks"):
+            present.append("hmac")
+        if values.get("webhook_bearer_token"):
+            present.append("bearer")
+        if values.get("webhook_basic"):
+            present.append("basic")
+        if values.get("webhook_header"):
+            present.append("header")
+        if values.get("webhook_auth_none"):
+            present.append("none")
+        if len(present) > 1:
+            raise ConfigError(
+                "configure at most one webhook auth method (found: " + ", ".join(present) + ")"
+            )
+
         # Required fields (fail fast).
         missing = [name for name in _REQUIRED if not values.get(name)]
         if missing:
@@ -160,3 +213,22 @@ class Config:
         if webhook_id is not None and webhook_id in self.webhooks:
             return self.webhooks[webhook_id]
         return self.webhooks.get(self.SINGLE_WEBHOOK_KEY)
+
+    def webhook_auth_method(self) -> Optional[str]:
+        """The single configured webhook auth method, or ``None`` if none is set.
+
+        Returns one of ``"hmac"`` | ``"bearer"`` | ``"basic"`` | ``"header"`` |
+        ``"none"``. Config loading guarantees at most one is configured, so the
+        order here is only a tie-break that never triggers.
+        """
+        if self.webhook_auth_none:
+            return "none"
+        if self.webhook_bearer_token:
+            return "bearer"
+        if self.webhook_basic:
+            return "basic"
+        if self.webhook_header:
+            return "header"
+        if self.webhooks:
+            return "hmac"
+        return None

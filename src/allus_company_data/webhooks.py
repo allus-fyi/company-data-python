@@ -78,25 +78,58 @@ def _as_bytes(raw_body: Any) -> bytes:
 
 
 def verify_webhook(raw_body: Any, headers: dict, config: Config) -> bool:
-    """Verify the ``X-Allus-Signature`` HMAC over the raw body.
+    """Verify a webhook against the SINGLE configured auth method.
 
-    Reads ``X-Allus-Webhook-Id``, looks up that webhook's HMAC secret in config
-    (falling back to the single-webhook shortcut), recomputes
-    ``HMAC-SHA256(rawBody, secret)`` as hex, and constant-time-compares it to the
-    ``X-Allus-Signature`` header. Returns ``False`` on a missing signature,
-    unknown/unconfigured webhook id, or mismatch — never raises for a bad
-    signature (that is :func:`handle_webhook`'s job).
+    Mirrors the platform's per-webhook delivery auth (one method per webhook):
+
+    * ``hmac``   — recompute ``HMAC-SHA256(rawBody, secret)`` (secret selected by
+      ``X-Allus-Webhook-Id``) and constant-time-compare to ``X-Allus-Signature``.
+    * ``bearer`` — ``Authorization`` equals ``Bearer <token>``.
+    * ``basic``  — ``Authorization`` equals ``Basic <base64(user:pass)>``.
+    * ``header`` — the configured custom header equals the configured value.
+    * ``none``   — always ``True`` (explicit opt-out).
+
+    All comparisons are constant-time. Returns ``False`` on a missing/mismatched
+    credential, or when no method is configured — never raises for a bad
+    credential (that is :func:`handle_webhook`'s job). Which method is used is
+    decided entirely by config (:meth:`Config.webhook_auth_method`); config
+    loading guarantees at most one is set.
     """
+    method = config.webhook_auth_method()
+    if method is None:
+        return False
+    if method == "none":
+        return True
+
+    if method == "bearer":
+        got = _header(headers, "authorization")
+        if got is None:
+            return False
+        return hmac.compare_digest(got, "Bearer " + (config.webhook_bearer_token or ""))
+
+    if method == "basic":
+        got = _header(headers, "authorization")
+        if got is None:
+            return False
+        creds = f'{config.webhook_basic["username"]}:{config.webhook_basic["password"]}'
+        token = base64.b64encode(creds.encode("utf-8")).decode("ascii")
+        return hmac.compare_digest(got, "Basic " + token)
+
+    if method == "header":
+        got = _header(headers, config.webhook_header["name"])
+        if got is None:
+            return False
+        return hmac.compare_digest(got, config.webhook_header["value"])
+
+    # method == "hmac"
     body = _as_bytes(raw_body)
     signature = _header(headers, _HDR_SIGNATURE)
     if not signature:
         return False
-
     webhook_id = _header(headers, _HDR_WEBHOOK_ID)
     secret = config.webhook_secret(webhook_id)
     if not secret:
         return False
-
     expected = hmac.new(secret.encode("utf-8"), body, sha256).hexdigest()
     # Constant-time compare (case-insensitive hex, like the platform's hex output).
     return hmac.compare_digest(expected, signature.strip().lower())
