@@ -352,3 +352,19 @@ def test_log_entries_parsed():
     # 'created_at' fallback for 'at'
     assert isinstance(logs[1].at, datetime)
     assert logs[1].raw is body["items"][1]
+
+
+def test_change_includes_share_code(decrypt_value):
+    """Every change event carries the person's profile share_code (nullable)."""
+    body = {"changes": [
+        {"id": "chg-1", "event": "connection_created",
+         "person_user_id": "person-1", "share_code": "ABC123",
+         "at": "2026-06-17T12:00:00Z"},
+        {"id": "chg-2", "event": "connection_created",
+         "person_user_id": "person-2", "at": "2026-06-17T12:00:00Z"},  # no share_code -> None
+    ]}
+    changes = Change.list_from_api(
+        body, type_for_slug=lambda s: None, decrypt_value=decrypt_value
+    )
+    assert changes[0].share_code == "ABC123"
+    assert changes[1].share_code is None

@@ -8,7 +8,7 @@ injected crypto core.
     RequestField { slug, label, type, one_time, mandatory }   # YOUR request config
     Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
     Value        { value, live, updated_at }
-    Change       { id, event, person_id, slug?, value?, live?, at }   # id = stable dedup key
+    Change       { id, event, person_id, share_code?, slug?, value?, live?, at }   # id = stable dedup key
     LogEntry     { type, message, metadata, at }
 
 Typed values:
@@ -295,6 +295,7 @@ class Change:
     id: str
     event: str
     person_id: Optional[str]
+    share_code: Optional[str] = None  # the person's profile share code (every event; may be null)
     slug: Optional[str] = None
     value: Any = None
     live: Optional[bool] = None
@@ -331,6 +332,7 @@ class Change:
             id=obj.get("id"),
             event=event,
             person_id=obj.get("person_user_id") or obj.get("person_id"),
+            share_code=obj.get("share_code"),
             slug=slug,
             value=value,
             live=live,
