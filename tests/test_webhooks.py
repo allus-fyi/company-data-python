@@ -32,7 +32,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from allus_company_data.config import Config
-from allus_company_data.errors import WebhookError
+from allus_company_data.errors import ConfigError, WebhookError
 from allus_company_data.webhooks import handle_webhook, parse_webhook, verify_webhook
 
 VECTOR_PATH = os.path.abspath(
@@ -452,3 +452,112 @@ class _RFResp:
 
     def json(self):
         return self._b
+
+
+# ── alternative webhook auth methods (bearer / basic / header / none) ────────────
+
+
+def _auth_cfg(**kw):
+    """Minimal Config carrying one alt-auth field (verify never reads the PEM here)."""
+    return Config(
+        api_url="https://api.allme.fyi",
+        client_id="svc",
+        client_secret="s",
+        service_private_key="unused.pem",
+        key_passphrase="unused",
+        **kw,
+    )
+
+
+def _full_data(vector, tmp_path, **extra):
+    pem = tmp_path / "k.pem"
+    pem.write_text(vector["encrypted_private_key_pem"], encoding="ascii")
+    data = {
+        "api_url": "https://api.allme.fyi",
+        "client_id": "svc",
+        "client_secret": "s",
+        "service_private_key": str(pem),
+        "key_passphrase": vector["passphrase"],
+    }
+    data.update(extra)
+    return data
+
+
+def test_verify_bearer_true():
+    cfg = _auth_cfg(webhook_bearer_token="tok123")
+    assert verify_webhook(b"{}", {"Authorization": "Bearer tok123"}, cfg) is True
+
+
+def test_verify_bearer_false_wrong_token():
+    cfg = _auth_cfg(webhook_bearer_token="tok123")
+    assert verify_webhook(b"{}", {"Authorization": "Bearer nope"}, cfg) is False
+
+
+def test_verify_bearer_false_missing_header():
+    cfg = _auth_cfg(webhook_bearer_token="tok123")
+    assert verify_webhook(b"{}", {}, cfg) is False
+
+
+def test_verify_basic_true():
+    cfg = _auth_cfg(webhook_basic={"username": "u", "password": "p"})
+    token = base64.b64encode(b"u:p").decode("ascii")
+    assert verify_webhook(b"{}", {"Authorization": "Basic " + token}, cfg) is True
+
+
+def test_verify_basic_false_wrong_password():
+    cfg = _auth_cfg(webhook_basic={"username": "u", "password": "p"})
+    bad = base64.b64encode(b"u:wrong").decode("ascii")
+    assert verify_webhook(b"{}", {"Authorization": "Basic " + bad}, cfg) is False
+
+
+def test_verify_header_true_case_insensitive_name():
+    cfg = _auth_cfg(webhook_header={"name": "X-My-Auth", "value": "sekret"})
+    assert verify_webhook(b"{}", {"x-my-auth": "sekret"}, cfg) is True
+
+
+def test_verify_header_false_wrong_value():
+    cfg = _auth_cfg(webhook_header={"name": "X-My-Auth", "value": "sekret"})
+    assert verify_webhook(b"{}", {"X-My-Auth": "nope"}, cfg) is False
+
+
+def test_verify_none_always_true():
+    cfg = _auth_cfg(webhook_auth_none=True)
+    assert verify_webhook(b"anything at all", {}, cfg) is True
+
+
+def test_verify_no_method_configured_false():
+    cfg = _auth_cfg()
+    assert verify_webhook(b"{}", {"Authorization": "Bearer x"}, cfg) is False
+
+
+def test_config_rejects_two_auth_methods(vector, tmp_path):
+    data = _full_data(vector, tmp_path, webhook_secret="h", webhook_bearer_token="b")
+    with pytest.raises(ConfigError):
+        Config._build(data)
+
+
+def test_config_rejects_bearer_plus_none(vector, tmp_path):
+    data = _full_data(vector, tmp_path, webhook_bearer_token="b", webhook_auth_none=True)
+    with pytest.raises(ConfigError):
+        Config._build(data)
+
+
+def test_config_basic_requires_both_fields(vector, tmp_path):
+    data = _full_data(vector, tmp_path, webhook_basic={"username": "u"})
+    with pytest.raises(ConfigError):
+        Config._build(data)
+
+
+def test_config_header_requires_both_fields(vector, tmp_path):
+    data = _full_data(vector, tmp_path, webhook_header={"name": "X-H"})
+    with pytest.raises(ConfigError):
+        Config._build(data)
+
+
+def test_config_single_method_ok_and_method_name(vector, tmp_path):
+    cfg = Config._build(_full_data(vector, tmp_path, webhook_bearer_token="b"))
+    assert cfg.webhook_auth_method() == "bearer"
+    cfg2 = Config._build(_full_data(vector, tmp_path, webhook_secret="h"))
+    assert cfg2.webhook_auth_method() == "hmac"
+    cfg3 = Config._build(_full_data(vector, tmp_path, webhook_auth_none=True))
+    assert cfg3.webhook_auth_method() == "none"
