@@ -73,4 +73,4 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("allus-company-data")
 except Exception:  # running from source, not installed
-    __version__ = "0.0.4"  # keep in sync with pyproject
+    __version__ = "0.0.5"  # keep in sync with pyproject
