@@ -328,6 +328,9 @@ def test_client_methods_delegate(config, vector):
             catalog_calls["n"] += 1
             return _RFResp()
 
+        def request(self, method, url, params=None, headers=None, json=None, data=None):
+            return self.get(url, params=params, headers=headers)
+
     client = Client(config, http=HttpClient(config, session=CatalogOnlySession()))
     body = _change_body(vector)
     headers = _headers(body)
@@ -388,6 +391,9 @@ def test_account_key_loaded_once_and_reused(vector, tmp_path, monkeypatch):
         def get(self, url, params=None, headers=None):
             assert url.endswith("/request-fields")
             return _RFResp()
+
+        def request(self, method, url, params=None, headers=None, json=None, data=None):
+            return self.get(url, params=params, headers=headers)
 
     client = Client(cfg, http=HttpClient(cfg, session=CatalogOnlySession()))
     # The account key was loaded exactly once, at construction (not per webhook).

@@ -43,8 +43,10 @@ class FakeSession:
     def __init__(self):
         self.post_responses = []
         self.get_responses = []
+        self.request_responses = []
         self.posts = []
         self.gets = []
+        self.requests = []
 
     def post(self, url, data=None, headers=None):
         self.posts.append({"url": url, "data": data, "headers": headers})
@@ -53,6 +55,17 @@ class FakeSession:
     def get(self, url, params=None, headers=None):
         self.gets.append({"url": url, "params": params, "headers": headers})
         return self.get_responses.pop(0)
+
+    def request(self, method, url, params=None, headers=None, json=None, data=None):
+        # GET goes through the existing get() recorder (keeps the get-based tests intact);
+        # write verbs (POST/PUT/DELETE) record + replay from request_responses.
+        if method.upper() == "GET":
+            return self.get(url, params=params, headers=headers)
+        self.requests.append(
+            {"method": method.upper(), "url": url, "params": params,
+             "headers": headers, "json": json, "data": data}
+        )
+        return self.request_responses.pop(0)
 
 
 def _config(tmp_path, fmt="json"):

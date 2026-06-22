@@ -299,6 +299,8 @@ class Change:
     slug: Optional[str] = None
     value: Any = None
     live: Optional[bool] = None
+    document_id: Optional[str] = None  # set on document_status_changed
+    status: Optional[str] = None       # set on document_status_changed
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -336,6 +338,8 @@ class Change:
             slug=slug,
             value=value,
             live=live,
+            document_id=obj.get("document_id"),
+            status=obj.get("status") if event == "document_status_changed" else None,
             at=_parse_iso_dt(obj.get("at")),
             raw=obj,
         )
@@ -360,6 +364,72 @@ class Change:
             )
             for o in items
         ]
+
+
+# ── document ─────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Document:
+    """A company document the SDK created/queried (company-data side).
+
+    value semantics mirror the connection-payload contract — keyed on
+    BROADCAST(plaintext) vs PER-PERSON(always encrypted), NOT on is_private:
+      broadcast file   -> {file, original_name, mime_type, size}   (plaintext)
+      per-person file  -> {"_enc_file": "enc_…json"}   (ciphertext blob, ANY is_private)
+      broadcast json   -> the JSON object   (plaintext)
+      per-person json  -> {"_enc":1,k,iv,d}   (ciphertext wrapper, ANY is_private;
+                                               decrypt on demand via .json())
+    is_private is device-display-only (lock vs decrypt-on-load), not the value shape.
+    """
+
+    id: str
+    kind: str
+    name: str
+    description: Optional[str]
+    status: str
+    payload_kind: str          # 'file' | 'json'
+    is_private: bool
+    value: Any
+    metadata: Optional[dict]
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+    _decrypt_value: Optional[DecryptValue] = field(default=None, repr=False)
+    raw: dict = field(default_factory=dict, repr=False)
+
+    def json(self) -> Any:
+        """For a json document, return the plaintext object.
+
+        Decryption is keyed on the value shape (per-person → encrypted wrapper),
+        NOT on is_private: a per-person json doc (ANY is_private) is an {"_enc":1,…}
+        wrapper and is decrypted with the SDK's own private key; a broadcast json doc
+        is already plaintext and returned as-is.
+        """
+        if self.payload_kind != "json":
+            raise DecryptError("json() is only valid for payload_kind='json' documents")
+        if isinstance(self.value, dict) and self.value.get("_enc") == 1:
+            if self._decrypt_value is None:
+                raise DecryptError("no decrypt wiring for an encrypted (per-person) document")
+            return json.loads(self._decrypt_value(self.value))
+        return self.value
+
+    @classmethod
+    def from_api(cls, obj: dict, *, decrypt_value: Optional[DecryptValue] = None) -> "Document":
+        return cls(
+            id=obj.get("id"), kind=obj.get("kind"), name=obj.get("name"),
+            description=obj.get("description"), status=obj.get("status"),
+            payload_kind=obj.get("payload_kind"),
+            is_private=bool(_coerce_bool(obj.get("is_private"))),
+            value=obj.get("value"), metadata=obj.get("metadata"),
+            created_at=_parse_iso_dt(obj.get("created_at")),
+            updated_at=_parse_iso_dt(obj.get("updated_at")),
+            _decrypt_value=decrypt_value, raw=obj,
+        )
+
+    @classmethod
+    def list_from_api(cls, body: Any, *, decrypt_value: Optional[DecryptValue] = None):
+        items = body.get("items", []) if isinstance(body, dict) else (body or [])
+        return [cls.from_api(o, decrypt_value=decrypt_value) for o in items]
 
 
 # ── log ────────────────────────────────────────────────────────────────────

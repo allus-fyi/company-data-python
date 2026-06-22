@@ -127,13 +127,48 @@ class HttpClient:
     # ── requests ──────────────────────────────────────────────────────────
 
     def get(self, path: str, params: Optional[dict] = None) -> Any:
-        """GET ``path`` (e.g. ``/api/company-data/connections``) → parsed body.
+        """GET ``path`` (e.g. ``/api/company-data/connections``) → parsed body."""
+        return self._request("GET", path, params=params)
+
+    def post(
+        self,
+        path: str,
+        json_body: Any = None,
+        *,
+        raw_body: Optional[bytes] = None,
+        content_type: Optional[str] = None,
+    ) -> Any:
+        """POST ``path`` with a JSON body or raw bytes → parsed body."""
+        return self._request(
+            "POST", path, json_body=json_body, raw_body=raw_body, content_type=content_type
+        )
+
+    def put(self, path: str, json_body: Any = None) -> Any:
+        """PUT ``path`` with a JSON body → parsed body."""
+        return self._request("PUT", path, json_body=json_body)
+
+    def delete(self, path: str) -> Any:
+        """DELETE ``path`` → parsed body."""
+        return self._request("DELETE", path)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict] = None,
+        json_body: Any = None,
+        raw_body: Optional[bytes] = None,
+        content_type: Optional[str] = None,
+    ) -> Any:
+        """The shared request loop for every verb.
 
         Adds the bearer token + an ``Accept`` header matching ``config.format``,
-        parses JSON or XML, and maps non-2xx responses to the SDK errors:
-        401 → one refresh-and-retry then :class:`AuthError`; 429 → bounded
-        Retry-After backoff then :class:`RateLimitError`; other non-2xx →
-        :class:`ApiError` (carrying the body's ``error_key`` when present).
+        carries an optional JSON or raw-bytes body, parses JSON or XML, and maps
+        non-2xx responses to the SDK errors: 401 → one refresh-and-retry then
+        :class:`AuthError`; 429 → bounded Retry-After backoff then
+        :class:`RateLimitError`; other non-2xx → :class:`ApiError` (carrying the
+        body's ``error_key`` when present).
         """
         url = self._url(path)
         wants_xml = self._config.format == "xml"
@@ -143,14 +178,17 @@ class HttpClient:
         refreshed_401 = False
         while True:
             token = self._bearer(force_refresh=False)
+            headers = {"Authorization": f"Bearer {token}", "Accept": accept}
+            body_kwargs: dict = {}
+            if raw_body is not None:
+                headers["Content-Type"] = content_type or "application/octet-stream"
+                body_kwargs["data"] = raw_body
+            elif json_body is not None:
+                headers["Content-Type"] = "application/json"
+                body_kwargs["json"] = json_body
             try:
-                resp = self._session.get(
-                    url,
-                    params=params,
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Accept": accept,
-                    },
+                resp = self._session.request(
+                    method, url, params=params, headers=headers, **body_kwargs
                 )
             except requests.RequestException as exc:
                 raise ApiError(0, None, f"request to {path} failed: {exc}") from exc

@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import secrets
 import tempfile
 from typing import Union
 
@@ -33,7 +34,10 @@ from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.hazmat.primitives.serialization import (
+    load_der_public_key,
+    load_pem_private_key,
+)
 
 GCM_TAG_LEN = 16  # bytes — appended to the AES-GCM ciphertext
 GCM_IV_LEN = 12   # bytes
@@ -151,6 +155,59 @@ def decrypt(
         return plaintext.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise DecryptError("decrypted plaintext is not valid UTF-8") from exc
+
+
+def load_public_key(spki_b64: str) -> rsa.RSAPublicKey:
+    """Load a base64 SPKI/DER public key (the platform's GET /api/keys public_key) → an RSA public key.
+
+    Config-only key handling does NOT apply to a RECIPIENT public key: it is not a
+    secret and is fetched live from the API per-recipient (never configured). The
+    SDK still never accepts a *private* key/passphrase as a method argument.
+    """
+    try:
+        der = base64.b64decode(spki_b64, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise DecryptError("recipient public_key is not valid base64") from exc
+    try:
+        key = load_der_public_key(der)
+    except (ValueError, TypeError) as exc:
+        raise DecryptError(f"recipient public_key is not a valid SPKI key: {exc}") from exc
+    if not isinstance(key, rsa.RSAPublicKey):
+        raise DecryptError("recipient public_key is not an RSA public key")
+    return key
+
+
+def encrypt_for_public_key(plaintext: str, public_key: rsa.RSAPublicKey) -> dict:
+    """Encrypt a UTF-8 string FOR a recipient RSA public key → a {"_enc":1,k,iv,d} wrapper.
+
+    The exact inverse of decrypt():
+      aesKey  = 32 random bytes
+      d       = AES-256-GCM(aesKey, iv=12 random bytes).encrypt(utf8(plaintext))  # tag appended
+      k       = RSA-OAEP(SHA-256, MGF1-SHA256).encrypt(aesKey, public_key)
+    Returns a dict (JSON-serializable). Used for EVERY per-person (targeted) document
+    (json + file), independent of is_private — broadcast docs stay plaintext.
+    """
+    if not isinstance(plaintext, str):
+        raise DecryptError("plaintext to encrypt must be a str")
+    aes_key = secrets.token_bytes(32)
+    iv = secrets.token_bytes(GCM_IV_LEN)  # 12
+    # AES-256-GCM: cryptography appends the 16-byte tag to the ciphertext (platform layout).
+    ciphertext_with_tag = AESGCM(aes_key).encrypt(iv, plaintext.encode("utf-8"), None)
+    # RSA-OAEP(SHA-256, MGF1-SHA256) — pin SHA-256 for digest AND MGF1 (never SHA-1).
+    enc_key = public_key.encrypt(
+        aes_key,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+    return {
+        "_enc": 1,
+        "k": base64.b64encode(enc_key).decode("ascii"),
+        "iv": base64.b64encode(iv).decode("ascii"),
+        "d": base64.b64encode(ciphertext_with_tag).decode("ascii"),
+    }
 
 
 class BinaryHandle:
