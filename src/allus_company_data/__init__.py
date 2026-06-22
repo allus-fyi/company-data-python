@@ -13,7 +13,13 @@ buffer + pump), the :class:`Client` facade, and the webhook receiver helpers.
 from .buffer import FileBuffer
 from .client import Client
 from .config import Config
-from .crypto import BinaryHandle, decrypt, load_private_key
+from .crypto import (
+    BinaryHandle,
+    decrypt,
+    encrypt_for_public_key,
+    load_private_key,
+    load_public_key,
+)
 from .errors import (
     ApiError,
     AuthError,
@@ -23,7 +29,7 @@ from .errors import (
     WebhookError,
 )
 from .http import HttpClient
-from .models import Change, Connection, LogEntry, RequestField, Value
+from .models import Change, Connection, Document, LogEntry, RequestField, Value
 from .pump import Pump
 from .webhooks import handle_webhook, parse_webhook, verify_webhook
 
@@ -34,7 +40,9 @@ __all__ = [
     "Config",
     # crypto
     "load_private_key",
+    "load_public_key",
     "decrypt",
+    "encrypt_for_public_key",
     "BinaryHandle",
     # errors
     "ConfigError",
@@ -50,6 +58,7 @@ __all__ = [
     "Connection",
     "Value",
     "Change",
+    "Document",
     "LogEntry",
     # changes pump
     "FileBuffer",

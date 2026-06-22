@@ -368,3 +368,64 @@ def test_change_includes_share_code(decrypt_value):
     )
     assert changes[0].share_code == "ABC123"
     assert changes[1].share_code is None
+
+
+# ── document_status_changed change + Document model ─────────────────────────────
+
+
+def test_change_document_status_changed_parses(vector, decrypt_value):
+    from allus_company_data.models import Change
+
+    body = {"changes": [{
+        "id": "chg-doc", "event": "document_status_changed",
+        "person_user_id": "u-1", "share_code": "ABC123",
+        "document_id": "doc-9", "status": "ended", "at": "2026-06-22T10:00:00Z",
+    }]}
+    [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, decrypt_value=decrypt_value)
+    assert chg.event == "document_status_changed"
+    assert chg.document_id == "doc-9"
+    assert chg.status == "ended"
+    assert chg.person_id == "u-1" and chg.share_code == "ABC123"
+    assert chg.slug is None and chg.value is None and chg.live is None
+
+
+def test_document_model_broadcast_json_is_plaintext():
+    from allus_company_data.models import Document
+
+    doc = Document.from_api({
+        "id": "d1", "kind": "document", "name": "Terms", "status": "active",
+        "payload_kind": "json", "is_private": False, "value": {"v": 1}, "metadata": {},
+    })
+    assert doc.json() == {"v": 1}  # no decrypt needed
+
+
+def test_document_model_per_person_json_decrypts(vector):
+    from allus_company_data.crypto import load_private_key
+    from allus_company_data.models import Document
+
+    priv = load_private_key(
+        vector["encrypted_private_key_pem"].encode("ascii"), vector["passphrase"]
+    )
+    wrapper = _encrypt_with_vector_pub(vector, json.dumps({"plan": "pro"}))
+    doc = Document.from_api(
+        {"id": "d2", "kind": "document", "name": "PP", "status": "active",
+         "payload_kind": "json", "is_private": True, "value": wrapper, "metadata": {}},
+        decrypt_value=lambda w: decrypt(w, priv),
+    )
+    assert doc.json() == {"plan": "pro"}  # decrypted via injected decrypt
+
+
+def _encrypt_with_vector_pub(vector, plaintext):
+    from allus_company_data.crypto import encrypt_for_public_key, load_private_key
+    from cryptography.hazmat.primitives import serialization
+
+    priv = load_private_key(
+        vector["encrypted_private_key_pem"].encode("ascii"), vector["passphrase"]
+    )
+    spki_b64 = base64.b64encode(
+        priv.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    ).decode("ascii")
+    from allus_company_data.crypto import load_public_key
+    return encrypt_for_public_key(plaintext, load_public_key(spki_b64))

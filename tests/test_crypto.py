@@ -265,3 +265,40 @@ def test_independent_openssl_node_crosscheck(vector):
     independent openssl+node toolchain — proving the format is platform-correct
     (anti-circularity), not just self-consistent with crypto.py."""
     assert _independent_decrypt_text(vector) == vector["text"]["plaintext"]
+
+
+# ── encrypt_for_public_key round-trips through decrypt ──────────────────────────
+
+
+def test_encrypt_for_public_key_round_trips_through_decrypt():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from allus_company_data.crypto import (
+        decrypt,
+        encrypt_for_public_key,
+        load_public_key,
+    )
+
+    priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    spki_b64 = base64.b64encode(
+        priv.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    ).decode()
+    pub = load_public_key(spki_b64)
+    for pt in ["hello", '{"a":1}', "with-üñîçödé"]:
+        wrapper = encrypt_for_public_key(pt, pub)
+        assert wrapper["_enc"] == 1 and {"k", "iv", "d"} <= wrapper.keys()
+        assert decrypt(wrapper, priv) == pt
+
+
+def test_load_public_key_rejects_garbage():
+    from allus_company_data.crypto import DecryptError, load_public_key
+
+    import pytest as _pytest
+    with _pytest.raises(DecryptError):
+        load_public_key("not-base64!!")
+    with _pytest.raises(DecryptError):
+        load_public_key(base64.b64encode(b"not a spki key").decode())

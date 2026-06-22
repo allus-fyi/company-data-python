@@ -41,6 +41,8 @@ How it is wired (the "everything else the SDK hides"):
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import time
 from typing import Any, Callable, Iterator, List, Optional
@@ -49,10 +51,10 @@ import requests
 
 from .config import Config
 from .crypto import decrypt as crypto_decrypt
-from .crypto import load_private_key
+from .crypto import encrypt_for_public_key, load_private_key, load_public_key
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError
 from .http import HttpClient
-from .models import Change, Connection, LogEntry, RequestField
+from .models import Change, Connection, Document, LogEntry, RequestField
 from .pump import Pump
 from . import webhooks as _webhooks
 
@@ -62,6 +64,8 @@ _CONNECTIONS = f"{_BASE}/connections"
 _CHANGES = f"{_BASE}/changes"
 _REQUEST_FIELDS = f"{_BASE}/request-fields"
 _LOGS = f"{_BASE}/logs"
+_DOCUMENTS = f"{_BASE}/documents"
+_KEYS = "/api/keys"
 
 # Default page size for the connections iterator. The endpoint is heavily
 # rate-limited, so we keep pages reasonably large to minimize
@@ -109,6 +113,10 @@ class Client:
         # The slug catalog, fetched once on first request_fields() and cached.
         self._request_fields: Optional[List[RequestField]] = None
         self._type_by_slug: dict[str, Optional[str]] = {}
+
+        # Recipient RSA public keys (by share_code) — cached for per-person document
+        # encryption. A public key is immutable + not a secret (fetched live, never configured).
+        self._pubkey_cache: dict[str, Any] = {}
 
     # ── constructors (config-only keys) ────────────────────────────────────────
 
@@ -357,6 +365,168 @@ class Client:
             account_key=self._account_key,  # cached once; no per-webhook PBKDF2
         )
 
+    # ── company documents (write) ───────────────────────────────────────────────
+
+    def _recipient_public_key(self, share_code: str):
+        """Fetch + cache the recipient RSA public key by share_code (GET /api/keys/{shareCode})."""
+        cached = self._pubkey_cache.get(share_code)
+        if cached is not None:
+            return cached
+        body = self._http.get(f"{_KEYS}/{share_code}")
+        spki = body.get("public_key") if isinstance(body, dict) else None
+        if not spki:
+            raise ApiError(0, "keys.not_found", f"no public_key for share_code {share_code}")
+        key = load_public_key(spki)
+        self._pubkey_cache[share_code] = key
+        return key
+
+    def _resolve_share_code(
+        self, connection_id: Optional[str], person_user_id: Optional[str]
+    ) -> str:
+        """Resolve a target's share_code (the recipient public-key handle).
+
+        Prefers a single-connection fetch (carries ``share_code``); falls back to a
+        connections scan by ``user_id``. Pass ``share_code=`` to skip this entirely.
+        """
+        if connection_id:
+            body = self._http.get(f"{_CONNECTIONS}/{connection_id}")
+            sc = body.get("share_code") if isinstance(body, dict) else None
+            if sc:
+                return str(sc)
+        if person_user_id:
+            for conn in self.connections():
+                raw = getattr(conn, "raw", {}) or {}
+                if raw.get("user_id") == person_user_id or conn.person_id == person_user_id:
+                    sc = raw.get("share_code")
+                    if sc:
+                        return str(sc)
+        raise ConfigError(
+            "could not resolve a share_code for the target — pass share_code= explicitly"
+        )
+
+    def create_document(
+        self, *, kind: str = "document", name: str, payload_kind: str,
+        is_private: bool = False, description: Optional[str] = None,
+        connection_id: Optional[str] = None, person_user_id: Optional[str] = None,
+        share_code: Optional[str] = None,            # recipient handle for per-person encryption
+        json_value: Any = None, file_bytes: Optional[bytes] = None,
+        file_mime: Optional[str] = None,
+        metadata: Optional[dict] = None, status: Optional[str] = None,
+    ) -> Document:
+        """Create a company document for a connection / person (PER-PERSON), or BROADCAST (no target).
+
+        payload_kind='json' → json_value (object). payload_kind='file' → file_bytes (+ file_mime).
+
+        Encryption is decided by the TARGET, not by is_private:
+          PER-PERSON (connection_id/person_user_id given) → the value is ALWAYS encrypted FOR
+            THE RECIPIENT (share_code resolved from connection_id/person_user_id when not given)
+            before it leaves the process — for EVERY per-person doc, private or not. The server
+            stores ciphertext. NO key argument.
+          BROADCAST (no target) → the value is sent PLAINTEXT (you cannot single-key-encrypt to
+            all of a service's connections). A broadcast MUST be non-private (a plaintext value
+            cannot be locked); is_private=True therefore requires a per-person target.
+
+        is_private is a DISPLAY-ONLY flag passed through to the API — it governs the recipient
+        device's lock vs decrypt-on-load behaviour, NOT whether the value is encrypted.
+        """
+        if payload_kind not in ("json", "file"):
+            raise ConfigError("payload_kind must be 'json' or 'file'")
+        target = None
+        if connection_id:
+            target = {"connection_id": connection_id}
+        elif person_user_id:
+            target = {"person_user_id": person_user_id}
+        # (else: broadcast — target stays None)
+
+        per_person = target is not None
+        if is_private and not per_person:
+            # A plaintext broadcast cannot be locked — is_private needs a per-person target.
+            raise ConfigError("is_private=True requires a per-person target (broadcast is plaintext)")
+
+        pubkey = None
+        if per_person:
+            # EVERY per-person doc is encrypted, private or not — fetch the recipient key.
+            sc = share_code or self._resolve_share_code(connection_id, person_user_id)
+            pubkey = self._recipient_public_key(sc)
+
+        body: dict = {"kind": kind, "name": name, "payload_kind": payload_kind,
+                      "is_private": bool(is_private), "target": target}
+        if description is not None:
+            body["description"] = description
+        if metadata is not None:
+            body["metadata"] = metadata
+        if status is not None:
+            body["status"] = status
+
+        if payload_kind == "json":
+            if json_value is None:
+                raise ConfigError("json_value is required for payload_kind='json'")
+            body["value"] = (
+                encrypt_for_public_key(json.dumps(json_value), pubkey) if per_person else json_value
+            )
+            created = self._http.post(_DOCUMENTS, json_body=body)
+            return Document.from_api(_doc_obj(created), decrypt_value=self._decrypt_value)
+
+        # file: create the metadata row first, then upload bytes to /{id}/file.
+        if file_bytes is None:
+            raise ConfigError("file_bytes is required for payload_kind='file'")
+        created = self._http.post(_DOCUMENTS, json_body=body)
+        doc = Document.from_api(_doc_obj(created), decrypt_value=self._decrypt_value)
+        if per_person:
+            # Encrypt the file bytes (EVERY per-person doc): wrap the file envelope string,
+            # then send the wrapper as bytes.
+            envelope = json.dumps({"file": _data_uri(file_bytes, file_mime)})
+            wrapper = encrypt_for_public_key(envelope, pubkey)
+            self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
+                            raw_body=json.dumps(wrapper).encode("utf-8"),
+                            content_type="application/json")
+        else:
+            # Broadcast — raw plaintext bytes.
+            self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
+                            raw_body=file_bytes,
+                            content_type=file_mime or "application/octet-stream")
+        return doc
+
+    def list_documents(self, *, person_user_id: Optional[str] = None,
+                       status: Optional[str] = None, limit: int = 100, offset: int = 0):
+        """List this service's documents → ``list[Document]`` (paged; optional person/status filter)."""
+        params: dict = {"limit": max(1, int(limit)), "offset": max(0, int(offset))}
+        if person_user_id:
+            params["person_user_id"] = person_user_id
+        if status:
+            params["status"] = status
+        body = self._http.get(_DOCUMENTS, params=params)
+        return Document.list_from_api(body, decrypt_value=self._decrypt_value)
+
+    def document(self, document_id: str) -> Document:
+        """Fetch one document by id → :class:`Document`."""
+        body = self._http.get(f"{_DOCUMENTS}/{document_id}")
+        return Document.from_api(_doc_obj(body), decrypt_value=self._decrypt_value)
+
+    def update_document_status(self, document_id: str, status: str) -> Document:
+        """Set a document's lifecycle status (offering|ready_to_sign|active|active_but_ending|ended)."""
+        body = self._http.put(f"{_DOCUMENTS}/{document_id}", json_body={"status": status})
+        return Document.from_api(_doc_obj(body), decrypt_value=self._decrypt_value)
+
+    def update_document_metadata(self, document_id: str, *, metadata: Optional[dict] = None,
+                                 name: Optional[str] = None, description: Optional[str] = None) -> Document:
+        """Update a document's metadata / name / description."""
+        payload: dict = {}
+        if metadata is not None:
+            payload["metadata"] = metadata
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if not payload:
+            raise ConfigError("update_document_metadata needs metadata, name, or description")
+        body = self._http.put(f"{_DOCUMENTS}/{document_id}", json_body=payload)
+        return Document.from_api(_doc_obj(body), decrypt_value=self._decrypt_value)
+
+    def delete_document(self, document_id: str) -> None:
+        """Delete a document (and its on-disk file)."""
+        self._http.delete(f"{_DOCUMENTS}/{document_id}")
+
 
 # ── module-level helpers ──────────────────────────────────────────────────────
 
@@ -375,6 +545,25 @@ def _load_service_key(config: Config):
     except DecryptError as exc:
         # A bad passphrase / malformed PEM is a configuration problem (fail fast).
         raise ConfigError(f"could not load service private key: {exc}") from exc
+
+
+def _doc_obj(body: Any) -> dict:
+    """Pull the document object out of a create/get/update response.
+
+    The API returns the bare document object; tolerate a ``{"document": {...}}`` wrapper too.
+    """
+    if isinstance(body, dict):
+        inner = body.get("document")
+        if isinstance(inner, dict):
+            return inner
+        return body
+    return {}
+
+
+def _data_uri(file_bytes: bytes, mime: Optional[str]) -> str:
+    """Build a ``data:<mime>;base64,<…>`` URI for the per-person file envelope."""
+    b64 = base64.b64encode(file_bytes).decode("ascii")
+    return f"data:{mime or 'application/octet-stream'};base64,{b64}"
 
 
 def _list_items(body: Any) -> List[Any]:

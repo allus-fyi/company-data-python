@@ -31,6 +31,7 @@ import pytest
 from allus_company_data.client import Client
 from allus_company_data.config import Config
 from allus_company_data.crypto import BinaryHandle
+from allus_company_data.errors import ConfigError
 from allus_company_data.http import HttpClient
 from allus_company_data.models import Connection, LogEntry, RequestField
 
@@ -94,10 +95,12 @@ class FakeResponse:
 class FakeSession:
     """Routes GET by path to a scripted handler; POST always returns the token."""
 
-    def __init__(self, get_router):
+    def __init__(self, get_router, write_router=None):
         self._get_router = get_router
+        self._write_router = write_router
         self.posts = []
         self.gets = []
+        self.requests = []
 
     def post(self, url, data=None, headers=None):
         self.posts.append({"url": url, "data": data})
@@ -109,6 +112,18 @@ class FakeSession:
     def get(self, url, params=None, headers=None):
         self.gets.append({"url": url, "params": params})
         return self._get_router(url, params)
+
+    def request(self, method, url, params=None, headers=None, json=None, data=None):
+        # GET reuses the scripted get router; write verbs record + delegate to write_router.
+        if method.upper() == "GET":
+            return self.get(url, params=params, headers=headers)
+        self.requests.append(
+            {"method": method.upper(), "url": url, "params": params,
+             "headers": headers, "json": json, "data": data}
+        )
+        if self._write_router is None:
+            return FakeResponse(200, json_body={})
+        return self._write_router(method.upper(), url, json, data)
 
 
 def _client(config, get_router):
@@ -425,3 +440,190 @@ def test_from_config_bad_passphrase_is_config_error(vector, tmp_path):
     }), encoding="utf-8")
     with pytest.raises(ConfigError):
         Client.from_config(str(cfg))
+
+
+# ── company documents (write) ──────────────────────────────────────────────────
+
+
+def _client_rw(config, get_router, write_router):
+    session = FakeSession(get_router, write_router)
+    http = HttpClient(config, session=session)
+    return Client(config, http=http), session
+
+
+def _vector_pub_spki_b64(vector):
+    """The vector key's PUBLIC half as base64 SPKI/DER (what GET /api/keys returns)."""
+    from allus_company_data.crypto import load_private_key
+    from cryptography.hazmat.primitives import serialization
+
+    priv = load_private_key(
+        vector["encrypted_private_key_pem"].encode("ascii"), vector["passphrase"]
+    )
+    return base64.b64encode(
+        priv.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    ).decode("ascii")
+
+
+def _no_get(url, params):
+    raise AssertionError("unexpected GET " + url)
+
+
+def test_create_document_broadcast_json_is_plaintext(config):
+    posted = {}
+
+    def write_router(method, url, json_body, data):
+        assert method == "POST" and url.endswith("/documents")
+        posted["body"] = json_body
+        return FakeResponse(201, json_body={
+            "id": "d1", "kind": "document", "name": "Terms", "description": None,
+            "status": "active", "payload_kind": "json", "is_private": False,
+            "value": json_body["value"], "metadata": None,
+            "created_at": None, "updated_at": None,
+        })
+
+    client, _ = _client_rw(config, _no_get, write_router)
+    doc = client.create_document(name="Terms", payload_kind="json",
+                                 json_value={"url": "x", "v": "1"}, status="active")
+    assert posted["body"]["target"] is None
+    assert posted["body"]["value"] == {"url": "x", "v": "1"}  # plaintext, no _enc
+    assert posted["body"]["is_private"] is False
+    assert doc.id == "d1" and doc.status == "active"
+
+
+def test_create_document_per_person_encrypts_for_both_privacy(config, vector):
+    spki = _vector_pub_spki_b64(vector)
+
+    for is_private in (False, True):
+        keys_fetched = {"n": 0}
+
+        def get_router(url, params):
+            assert url.endswith("/api/keys/ABC123")
+            keys_fetched["n"] += 1
+            return FakeResponse(200, json_body={"public_key": spki})
+
+        captured = {}
+
+        def write_router(method, url, json_body, data):
+            captured["body"] = json_body
+            return FakeResponse(201, json_body={
+                "id": "d2", "kind": "document", "name": "PP", "description": None,
+                "status": "active", "payload_kind": "json", "is_private": is_private,
+                "value": json_body["value"], "metadata": None,
+                "created_at": None, "updated_at": None,
+            })
+
+        client, _ = _client_rw(config, get_router, write_router)
+        doc = client.create_document(
+            name="PP", payload_kind="json", json_value={"plan": "pro"},
+            connection_id="conn-1", share_code="ABC123", is_private=is_private,
+        )
+        assert keys_fetched["n"] == 1  # fetched the recipient key
+        val = captured["body"]["value"]
+        assert isinstance(val, dict) and val.get("_enc") == 1  # ENCRYPTED, any is_private
+        assert {"k", "iv", "d"} <= set(val)
+        assert captured["body"]["target"] == {"connection_id": "conn-1"}
+        assert captured["body"]["is_private"] is is_private
+        # round-trips through the SDK's own decrypt → the original plaintext
+        from allus_company_data.crypto import decrypt, load_private_key
+        priv = load_private_key(
+            vector["encrypted_private_key_pem"].encode("ascii"), vector["passphrase"]
+        )
+        assert json.loads(decrypt(val, priv)) == {"plan": "pro"}
+        assert doc.id == "d2"
+
+
+def test_create_document_private_broadcast_raises(config):
+    client, _ = _client_rw(config, _no_get, lambda *a: None)
+    with pytest.raises(ConfigError):
+        client.create_document(name="x", payload_kind="json",
+                               json_value={"a": 1}, is_private=True)
+
+
+def test_create_document_file_broadcast_uploads_raw_bytes(config):
+    calls = []
+
+    def write_router(method, url, json_body, data):
+        calls.append({"method": method, "url": url, "json": json_body, "data": data})
+        if url.endswith("/documents"):
+            return FakeResponse(201, json_body={
+                "id": "f1", "kind": "document", "name": "C", "description": None,
+                "status": "active", "payload_kind": "file", "is_private": False,
+                "value": {"_pending": True}, "metadata": None,
+                "created_at": None, "updated_at": None,
+            })
+        assert url.endswith("/documents/f1/file")
+        return FakeResponse(200, json_body={"id": "f1"})
+
+    client, _ = _client_rw(config, _no_get, write_router)
+    client.create_document(name="C", payload_kind="file",
+                           file_bytes=b"%PDF-1.4 x", file_mime="application/pdf")
+    assert calls[0]["url"].endswith("/documents") and calls[0]["json"]["target"] is None
+    assert calls[1]["url"].endswith("/documents/f1/file")
+    assert calls[1]["data"] == b"%PDF-1.4 x"  # raw plaintext bytes
+
+
+def test_create_document_file_per_person_uploads_wrapper_bytes(config, vector):
+    spki = _vector_pub_spki_b64(vector)
+    calls = []
+
+    def get_router(url, params):
+        return FakeResponse(200, json_body={"public_key": spki})
+
+    def write_router(method, url, json_body, data):
+        calls.append({"url": url, "data": data})
+        if url.endswith("/documents"):
+            return FakeResponse(201, json_body={
+                "id": "f2", "kind": "document", "name": "C", "description": None,
+                "status": "active", "payload_kind": "file", "is_private": True,
+                "value": {"_pending": True}, "metadata": None,
+                "created_at": None, "updated_at": None,
+            })
+        return FakeResponse(200, json_body={"id": "f2"})
+
+    client, _ = _client_rw(config, get_router, write_router)
+    client.create_document(name="C", payload_kind="file", file_bytes=b"hello-bytes",
+                           file_mime="application/pdf", person_user_id="u1",
+                           share_code="ABC123", is_private=True)
+    upload = calls[1]["data"]
+    assert isinstance(upload, (bytes, bytearray))
+    wrapper = json.loads(upload.decode("utf-8"))
+    assert wrapper.get("_enc") == 1  # ciphertext wrapper bytes, not the raw file
+    # decrypt → the {"file":"data:...base64,..."} envelope holding the original bytes
+    from allus_company_data.crypto import decrypt, load_private_key
+    priv = load_private_key(
+        vector["encrypted_private_key_pem"].encode("ascii"), vector["passphrase"]
+    )
+    env = json.loads(decrypt(wrapper, priv))
+    assert env["file"].startswith("data:application/pdf;base64,")
+    assert base64.b64decode(env["file"].split(",", 1)[1]) == b"hello-bytes"
+
+
+def test_document_verbs_hit_right_path(config):
+    seen = []
+
+    def get_router(url, params):
+        if url.endswith("/documents"):
+            return FakeResponse(200, json_body={"total": 0, "items": []})
+        if "/documents/d9" in url:
+            return FakeResponse(200, json_body={"id": "d9", "payload_kind": "json",
+                                                "is_private": False, "value": {"a": 1}})
+        raise AssertionError("unexpected GET " + url)
+
+    def write_router(method, url, json_body, data):
+        seen.append((method, url, json_body))
+        return FakeResponse(200, json_body={"id": "d9", "payload_kind": "json",
+                                            "is_private": False, "value": {"a": 1},
+                                            "status": "ended"})
+
+    client, _ = _client_rw(config, get_router, write_router)
+    assert client.list_documents(status="active") == []
+    assert client.document("d9").id == "d9"
+    client.update_document_status("d9", "ended")
+    client.update_document_metadata("d9", name="renamed")
+    client.delete_document("d9")
+    methods = [(m, u.split("/api/company-data")[-1]) for m, u, _ in seen]
+    assert ("PUT", "/documents/d9") in methods
+    assert methods.count(("PUT", "/documents/d9")) == 2
+    assert ("DELETE", "/documents/d9") in methods
