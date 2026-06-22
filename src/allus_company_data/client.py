@@ -411,6 +411,7 @@ class Client:
         share_code: Optional[str] = None,            # recipient handle for per-person encryption
         json_value: Any = None, file_bytes: Optional[bytes] = None,
         file_mime: Optional[str] = None,
+        requires_signature: bool = False, requires_acceptance: bool = False,
         metadata: Optional[dict] = None, status: Optional[str] = None,
     ) -> Document:
         """Create a company document for a connection / person (PER-PERSON), or BROADCAST (no target).
@@ -431,6 +432,8 @@ class Client:
         """
         if payload_kind not in ("json", "file"):
             raise ConfigError("payload_kind must be 'json' or 'file'")
+        if kind not in ("document", "agreement", "subscription"):
+            raise ConfigError("kind must be 'document', 'agreement' or 'subscription'")
         target = None
         if connection_id:
             target = {"connection_id": connection_id}
@@ -439,6 +442,11 @@ class Client:
         # (else: broadcast — target stays None)
 
         per_person = target is not None
+        # A contract (agreement/subscription, or either flag set) is ALWAYS per-person → it must target one
+        # connected person, and is therefore always encrypted to the recipient like any per-person document.
+        is_contract = kind in ("agreement", "subscription") or requires_signature or requires_acceptance
+        if is_contract and not per_person:
+            raise ConfigError("a contract must target one connected person")
         if is_private and not per_person:
             # A plaintext broadcast cannot be locked — is_private needs a per-person target.
             raise ConfigError("is_private=True requires a per-person target (broadcast is plaintext)")
@@ -450,7 +458,10 @@ class Client:
             pubkey = self._recipient_public_key(sc)
 
         body: dict = {"kind": kind, "name": name, "payload_kind": payload_kind,
-                      "is_private": bool(is_private), "target": target}
+                      "is_private": bool(is_private),
+                      "requires_signature": bool(requires_signature),
+                      "requires_acceptance": bool(requires_acceptance),
+                      "target": target}
         if description is not None:
             body["description"] = description
         if metadata is not None:
