@@ -19,8 +19,8 @@ the request slots you configured.
 [Quickstart](#quickstart) · [Every call](#every-call) ·
 [The typed value model](#the-typed-value-model) ·
 [The changes pump](#the-changes-pump) · [Webhooks](#webhooks) ·
-[Rate limits](#rate-limits) · [Errors](#errors) ·
-[How it's wired](#how-its-wired)
+[Company documents](#company-documents) · [Rate limits](#rate-limits) ·
+[Errors](#errors) · [How it's wired](#how-its-wired)
 
 Deeper reference pages live in [`docs/`](docs/):
 [config](docs/config.md) · [model](docs/model.md) · [pump](docs/pump.md) ·
@@ -333,7 +333,8 @@ You work with these objects and nothing else (`from allus_company_data import �
 RequestField { slug, label, type, one_time, mandatory }     # YOUR request config
 Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
 Value        { value, live, updated_at }
-Change       { id, event, person_id, slug?, value?, live?, at }
+Change       { id, event, person_id, slug?, value?, live?, document_id?, status?, at }
+Document     { id, kind, name, description, status, payload_kind, is_private, value, metadata, created_at, updated_at }
 LogEntry     { type, message, metadata, at }
 ```
 
@@ -392,9 +393,10 @@ A change-feed / webhook event.
 | Attribute | Meaning |
 |-----------|---------|
 | `id` | **The stable server change-row id — your dedup key** (captured before the server delete). |
-| `event` | `connection_created`, `connection_deleted`, `field_updated`, `field_deleted`, `consent_accepted`, `consent_declined`. |
+| `event` | `connection_created`, `connection_deleted`, `field_updated`, `field_deleted`, `consent_accepted`, `consent_declined`, `document_status_changed`. |
 | `person_id` | The person the change is about (may be `None`). |
-| `slug`, `value`, `live` | Present only on `field_updated`; `value` is typed exactly like `Value.value` (incl. a lazy `BinaryHandle` for binaries). Connection/consent events carry no slot/value. |
+| `slug`, `value`, `live` | Present only on `field_updated`; `value` is typed exactly like `Value.value` (incl. a lazy `BinaryHandle` for binaries). Connection/consent/document events carry no slot/value. |
+| `document_id`, `status` | Present only on `document_status_changed` — which document moved lifecycle state and to what (no slug/value). See [Company documents](#company-documents). |
 | `at` | `datetime` of the change. (There is no separate `updated_at` on a change.) |
 
 ### `.raw`
@@ -552,6 +554,129 @@ webhook without an `account_private_key` configured, you get a `WebhookError`.
 > internally; you only supply the account key in config.
 
 See [`docs/webhooks.md`](docs/webhooks.md).
+
+---
+
+## Company documents
+
+Documents are content **your service issues to people** (a quote, a contract, a
+JSON payload, a PDF) — the mirror image of the request slots. They come in two
+shapes:
+
+* **Broadcast** — no target. Sent to **every** connection on the service.
+  **Plaintext** — you can't single-key-encrypt one value to all your
+  connections, so a broadcast value is stored as-is.
+* **Per-person** — targeted at one connection (`connection_id=` /
+  `person_user_id=` / `share_code=`). **Automatically end-to-end encrypted to
+  that recipient's public key** before it leaves the process. The server only
+  ever stores ciphertext.
+
+> **The encryption rule, plainly:** every **per-person** document is
+> automatically end-to-end encrypted to the recipient's public key — for **any**
+> `is_private` value. **Broadcast** documents are plaintext. `is_private` is a
+> **device-display-only** flag (it picks lock-screen vs decrypt-on-load on the
+> recipient's device), *not* what decides encryption — so `is_private=True` with
+> **no** per-person target raises `ConfigError`. As everywhere in this SDK, **no
+> method ever takes a key or secret argument** — the recipient key is fetched for
+> you, and your own service key comes from config.
+
+### Creating documents
+
+`payload_kind` picks the body:
+
+* `payload_kind="json"` — pass `json_value=` (a JSON-serializable object).
+* `payload_kind="file"` — pass `file_bytes=` (`+ file_mime=`); the bytes are
+  uploaded. For a **per-person** file the bytes are encrypted automatically too.
+
+```python
+from allus_company_data import Client
+
+client = Client.from_config("allus.json")
+
+# 1. BROADCAST plaintext json doc — every connection sees it, no target.
+notice = client.create_document(
+    kind="document",
+    name="2026 price list",
+    payload_kind="json",
+    json_value={"plan": "pro", "monthly": 49, "currency": "EUR"},
+)
+
+# 2. PER-PERSON doc — auto-encrypted to that recipient's public key.
+#    Target it by ANY one of connection_id / person_user_id / share_code.
+contract = client.create_document(
+    kind="document",
+    name="Service agreement",
+    payload_kind="json",
+    is_private=True,                       # display-only; needs a per-person target
+    connection_id="019xxxxxxxxxxxxxxxxxxxxxxxxx",
+    json_value={"tier": "enterprise", "term_months": 12},
+)
+
+# A per-person FILE — the bytes are encrypted for the recipient automatically.
+with open("agreement.pdf", "rb") as fh:
+    pdf = client.create_document(
+        kind="legal_document",
+        name="Signed agreement",
+        payload_kind="file",
+        person_user_id="019yyyyyyyyyyyyyyyyyyyyyyyyy",
+        file_bytes=fh.read(),
+        file_mime="application/pdf",
+    )
+
+# is_private without a target → ConfigError (a broadcast can't be locked).
+```
+
+### Listing, reading, updating, deleting
+
+```python
+list_documents(*, person_user_id=None, status=None, limit=100, offset=0) -> list[Document]
+document(document_id)                                                     -> Document
+update_document_status(document_id, status)                              -> Document
+update_document_metadata(document_id, *, metadata=None, name=None,
+                         description=None)                               -> Document
+delete_document(document_id)                                            -> None
+```
+
+```python
+# All this service's documents (optionally filter by person and/or status).
+for doc in client.list_documents(status="offering"):
+    print(doc.id, doc.name, doc.status, doc.payload_kind, "private" if doc.is_private else "shared")
+
+doc = client.document(contract.id)
+
+# For a json doc, .json() returns the plaintext object — a per-person doc is
+# decrypted with your service key on demand; a broadcast doc is already plaintext.
+print(doc.json())
+
+# Move it through its lifecycle / edit its metadata.
+client.update_document_status(contract.id, "active")
+client.update_document_metadata(contract.id, name="Service agreement (v2)",
+                                metadata={"renewal": "auto"})
+
+client.delete_document(notice.id)
+```
+
+A `Document` carries `id, kind, name, description, status, payload_kind,
+is_private, value, metadata, created_at, updated_at` (and `.raw`). Use `.json()`
+on a `payload_kind="json"` document to get the decrypted plaintext object.
+
+### Reacting to a status change in the feed
+
+When someone advances one of your documents (e.g. signs it), the platform emits a
+**`document_status_changed`** change. In a `process_changes` handler it carries
+`.document_id` and `.status` (and **no** `slug`/`value` — it's a lifecycle event,
+not a field value):
+
+```python
+def handle(change):
+    if change.event == "document_status_changed":
+        # the document moved lifecycle state (offering → ready_to_sign → active → …)
+        on_document_status(change.document_id, change.status)
+    elif change.event == "field_updated":
+        store(change.person_id, change.slug, change.value)
+
+client.process_changes(handle)
+```
 
 ---
 
