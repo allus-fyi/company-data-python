@@ -389,6 +389,34 @@ def test_change_document_status_changed_parses(vector, decrypt_value):
     assert chg.slug is None and chg.value is None and chg.live is None
 
 
+def test_change_document_status_changed_carries_action(decrypt_value):
+    from allus_company_data.models import Change
+
+    body = {"changes": [{
+        "id": "chg-sign", "event": "document_status_changed",
+        "person_user_id": "u-2", "action": "signed",
+        "document_id": "doc-7", "status": "active", "at": "2026-06-22T10:00:00Z",
+    }]}
+    [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, decrypt_value=decrypt_value)
+    assert chg.event == "document_status_changed"
+    assert chg.action == "signed"
+    assert chg.document_id == "doc-7" and chg.status == "active"
+    assert chg.slug is None and chg.value is None
+
+
+def test_document_model_carries_contract_flags_and_signatures():
+    from allus_company_data.models import Document
+
+    doc = Document.from_api({
+        "id": "c1", "kind": "agreement", "name": "Agreement", "status": "active",
+        "payload_kind": "json", "is_private": False, "value": {"v": 1}, "metadata": {},
+        "requires_signature": True, "requires_acceptance": False,
+        "signatures": [{"action": "signed", "method": "biometric", "content_sha256": "ab" * 32}],
+    })
+    assert doc.requires_signature is True and doc.requires_acceptance is False
+    assert len(doc.signatures) == 1 and doc.signatures[0]["action"] == "signed"
+
+
 def test_document_model_broadcast_json_is_plaintext():
     from allus_company_data.models import Document
 

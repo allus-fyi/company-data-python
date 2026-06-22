@@ -541,6 +541,21 @@ def test_create_document_private_broadcast_raises(config):
                                json_value={"a": 1}, is_private=True)
 
 
+def test_create_document_contract_without_target_raises(config):
+    client, _ = _client_rw(config, _no_get, lambda *a: None)
+    with pytest.raises(ConfigError):
+        client.create_document(name="Agreement", payload_kind="json",
+                               kind="agreement", requires_signature=True,
+                               json_value={"a": 1})
+
+
+def test_create_document_invalid_kind_raises(config):
+    client, _ = _client_rw(config, _no_get, lambda *a: None)
+    with pytest.raises(ConfigError):
+        client.create_document(name="x", payload_kind="json",
+                               kind="invalid", json_value={"a": 1})
+
+
 def test_create_document_file_broadcast_uploads_raw_bytes(config):
     calls = []
 

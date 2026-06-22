@@ -301,6 +301,7 @@ class Change:
     live: Optional[bool] = None
     document_id: Optional[str] = None  # set on document_status_changed
     status: Optional[str] = None       # set on document_status_changed
+    action: Optional[str] = None       # set on document_status_changed: signed | accepted | cancelled
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -340,6 +341,7 @@ class Change:
             live=live,
             document_id=obj.get("document_id"),
             status=obj.get("status") if event == "document_status_changed" else None,
+            action=obj.get("action") if event == "document_status_changed" else None,
             at=_parse_iso_dt(obj.get("at")),
             raw=obj,
         )
@@ -394,6 +396,9 @@ class Document:
     metadata: Optional[dict]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    requires_signature: bool = False
+    requires_acceptance: bool = False
+    signatures: list = field(default_factory=list)  # contract audit trail (action/method/content_sha256/...)
     _decrypt_value: Optional[DecryptValue] = field(default=None, repr=False)
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -423,6 +428,9 @@ class Document:
             value=obj.get("value"), metadata=obj.get("metadata"),
             created_at=_parse_iso_dt(obj.get("created_at")),
             updated_at=_parse_iso_dt(obj.get("updated_at")),
+            requires_signature=bool(_coerce_bool(obj.get("requires_signature"))),
+            requires_acceptance=bool(_coerce_bool(obj.get("requires_acceptance"))),
+            signatures=obj.get("signatures") or [],
             _decrypt_value=decrypt_value, raw=obj,
         )
 
