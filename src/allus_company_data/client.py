@@ -44,17 +44,20 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import secrets
 import time
 from typing import Any, Callable, Iterator, List, Optional
 
 import requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .config import Config
 from .crypto import decrypt as crypto_decrypt
 from .crypto import encrypt_for_public_key, load_private_key, load_public_key
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError
+from .flow_condition import evaluate as evaluate_condition
 from .http import HttpClient
-from .models import Change, Connection, Document, LogEntry, RequestField
+from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField
 from .pump import Pump
 from . import webhooks as _webhooks
 
@@ -65,6 +68,8 @@ _CHANGES = f"{_BASE}/changes"
 _REQUEST_FIELDS = f"{_BASE}/request-fields"
 _LOGS = f"{_BASE}/logs"
 _DOCUMENTS = f"{_BASE}/documents"
+_FLOWS = f"{_BASE}/flows"          # POST /api/company-data/flows/{flowId}/runs
+_FLOW_RUNS = f"{_BASE}/flow-runs"  # list / get / answers / generate
 _KEYS = "/api/keys"
 
 # Default page size for the connections iterator. The endpoint is heavily
@@ -538,8 +543,209 @@ class Client:
         """Delete a document (and its on-disk file)."""
         self._http.delete(f"{_DOCUMENTS}/{document_id}")
 
+    # ── contract-flow runs (company side — the company is a bound party) ─────────
+
+    def trigger_flow_run(self, flow_id: str, *, connection_id: str, bindings: dict) -> FlowRun:
+        """Start a run for a connection.
+
+        ``bindings`` = ``{party_key: user_id}`` covering the flow's parties (each
+        bound user must be the company or the connected person). Pins the flow's
+        latest PUBLISHED version. ``connection_id`` is the person-side
+        ``company_service_connections.id`` for this service. Returns the created
+        :class:`FlowRun` (status ``awaiting_<entry node's party>``).
+        """
+        body = {"target": {"connection_id": connection_id}, "bindings": bindings}
+        created = self._http.post(f"{_FLOWS}/{flow_id}/runs", json_body=body)
+        return FlowRun.from_api(created)
+
+    def flow_runs(self, *, status: Optional[str] = "awaiting_company") -> List[FlowRun]:
+        """List this service's runs. Default ``awaiting_company`` = the actionable queue.
+
+        Pass ``status=None`` for all runs, or any status filter
+        (``awaiting_<party>`` / ``generating`` / ``awaiting_signature`` /
+        ``completed`` / ``cancelled``).
+        """
+        params = {"status": status} if status else None
+        body = self._http.get(_FLOW_RUNS, params=params)
+        return [FlowRun.from_api(o) for o in _list_items(body)]
+
+    def flow_run(self, run_id: str) -> FlowRun:
+        """Fetch one run by id → :class:`FlowRun`."""
+        return FlowRun.from_api(self._http.get(f"{_FLOW_RUNS}/{run_id}"))
+
+    def _service_public_key(self):
+        """The service RSA public key = the public half of the loaded service private key.
+
+        The run payload does NOT carry the service public key; the company makes
+        its own answer copy by encrypting to the public half of the same RSA pair
+        it already holds (config-only key handling — no extra fetch, no key arg).
+        """
+        if getattr(self, "_svc_pub", None) is None:
+            self._svc_pub = self._private_key.public_key()
+        return self._svc_pub
+
+    def _decrypt_run_answers(self, run: FlowRun) -> dict:
+        """Decrypt the company's service-key answer copies → ``{slug: plaintext}``.
+
+        Only the rows whose ``for_user_id`` is the company's bound user_id are
+        decryptable with the service private key; the person's copies are skipped.
+        """
+        out: dict = {}
+        for row in run.answers:
+            if row.get("for_user_id") != run.service_user_id:
+                continue
+            slug = row.get("slug")
+            v = row.get("value")
+            if slug is None or v is None:
+                continue
+            out[slug] = crypto_decrypt(v, self._private_key)
+        return out
+
+    def _flow_person_public_key(self, run: FlowRun, uid: str, party_pubkeys: dict):
+        """Resolve a person party's RSA public key for per-party answer encryption.
+
+        Prefers a caller-supplied key, else resolves the person's share_code from
+        the run's connection (the connection carries it) → ``GET /api/keys/{code}``.
+
+        Integration gap: the run payload exposes neither person public keys nor
+        per-binding share codes, so the SDK resolves via the connection. Pass
+        ``party_pubkeys={uid: RSAPublicKey}`` to skip the lookup entirely.
+        """
+        if uid in party_pubkeys:
+            return party_pubkeys[uid]
+        share_code = self._resolve_share_code(run.connection_id, uid)
+        return self._recipient_public_key(share_code)
+
+    def submit_flow_answers(self, run: FlowRun, fill: dict, *, party_pubkeys: Optional[dict] = None) -> FlowRun:
+        """Fill the company's current node and advance.
+
+        ``fill`` = ``{slug: plaintext_value}`` the caller computed for this node.
+        For EACH answer the SDK encrypts one copy per bound party (the company via
+        the service public key; each person party via their public key), evaluates
+        the next node LOCALLY (ordered outgoing edges, first match) over the full
+        decrypted answer map, and POSTs ``{answers, next_node?/leaf, next_party?}``.
+
+        Returns the refreshed :class:`FlowRun` (status flipped to
+        ``awaiting_<next party>`` / ``generating`` / ``completed``). A document-mode
+        leaf leaves the run ``generating`` — call :meth:`generate_flow_document`
+        (or use :meth:`process_flow_run`, which chains it).
+        """
+        party_pubkeys = dict(party_pubkeys or {})
+        answers_so_far = self._decrypt_run_answers(run)
+        full = dict(answers_so_far)
+        full.update(fill)
+        svc_pub = self._service_public_key()
+
+        answers_out = []
+        for slug, val in fill.items():
+            plain = val if isinstance(val, str) else json.dumps(val)
+            values = []
+            for uid in run.bindings.values():
+                if uid == run.service_user_id:
+                    key = svc_pub
+                else:
+                    key = self._flow_person_public_key(run, uid, party_pubkeys)
+                values.append({"for_user_id": uid, "value": encrypt_for_public_key(plain, key)})
+            answers_out.append({"slug": slug, "values": values})
+
+        nxt = _compute_next(run.definition, run.current_node, full)
+        body: dict = {"answers": answers_out}
+        if nxt.get("leaf"):
+            body["leaf"] = True
+        else:
+            body["next_node"] = nxt["next_node"]
+            body["next_party"] = _party_of(run.definition, nxt["next_node"])
+        res = self._http.post(f"{_FLOW_RUNS}/{run.id}/answers", json_body=body)
+        return FlowRun.from_api(res)
+
+    def generate_flow_document(self, run: FlowRun) -> dict:
+        """Document-mode company leaf: one-time-key value gather → POST /generate.
+
+        Builds a random 32-byte AES-256-GCM key, encrypts ``JSON({slug: plaintext})``
+        of the company's decrypted answers, packs ``iv(12)||ciphertext||tag(16)``,
+        and POSTs ``{otk: base64(key), values: base64(blob)}``. Returns the API
+        response ``{document_id, status: "awaiting_signature"}`` (idempotent — a
+        second call with a ``document_id`` already set echoes it back).
+        """
+        answers = self._decrypt_run_answers(run)
+        payload = json.dumps(
+            {k: (v if isinstance(v, str) else json.dumps(v)) for k, v in answers.items()}
+        ).encode("utf-8")
+        otk = secrets.token_bytes(32)
+        iv = secrets.token_bytes(12)
+        # AESGCM appends the 16-byte tag; the server reads iv(12)||ct||tag(16).
+        ct_with_tag = AESGCM(otk).encrypt(iv, payload, None)
+        blob = iv + ct_with_tag
+        body = {
+            "otk": base64.b64encode(otk).decode("ascii"),
+            "values": base64.b64encode(blob).decode("ascii"),
+        }
+        return self._http.post(f"{_FLOW_RUNS}/{run.id}/generate", json_body=body)
+
+    def process_flow_run(
+        self,
+        run_id: str,
+        fill_node: Callable[[dict, dict], Optional[dict]],
+        *,
+        party_pubkeys: Optional[dict] = None,
+    ) -> FlowRun:
+        """High-level company turn: load → (if our turn) fill + advance + generate.
+
+        ``fill_node(node, answers) -> {slug: value}`` is the company's logic for the
+        current node (``node`` is the pinned-graph node dict, ``answers`` the
+        decrypted ``{slug: value}`` so far). The SDK encrypts per party, submits,
+        and — if the submit landed on a document-mode leaf — calls
+        :meth:`generate_flow_document`. Returns the latest :class:`FlowRun`; when
+        the run is not awaiting the company it is returned untouched.
+        """
+        run = self.flow_run(run_id)
+        company_party = run.company_party_key
+        if company_party is None or run.status != f"awaiting_{company_party}":
+            return run  # not our turn (or company not bound)
+        node = _node_by_key(run.definition, run.current_node)
+        if node is None:
+            return run
+        answers = self._decrypt_run_answers(run)
+        fill = fill_node(node, answers) or {}
+        was_leaf = _compute_next(run.definition, run.current_node, {**answers, **fill}).get("leaf")
+        run = self.submit_flow_answers(run, fill, party_pubkeys=party_pubkeys)
+        if was_leaf and (run.output_mode or run.definition.get("output_mode")) == "document":
+            self.generate_flow_document(run)
+            run = self.flow_run(run.id)
+        return run
+
 
 # ── module-level helpers ──────────────────────────────────────────────────────
+
+
+def _node_by_key(definition: dict, key: Optional[str]) -> Optional[dict]:
+    for n in definition.get("nodes", []):
+        if isinstance(n, dict) and n.get("key") == key:
+            return n
+    return None
+
+
+def _compute_next(definition: dict, from_key: Optional[str], answers: dict) -> dict:
+    """The next node after ``from_key`` — ordered outgoing edges, first match wins.
+
+    Returns ``{"next_node": key}`` or ``{"leaf": True}`` (no outgoing edge, or none
+    matched — a dead-end is treated as a leaf, matching the platform engine).
+    """
+    edges = sorted(
+        (e for e in definition.get("edges", []) if isinstance(e, dict) and e.get("from") == from_key),
+        key=lambda e: e.get("sort", 0),
+    )
+    if not edges:
+        return {"leaf": True}
+    for e in edges:
+        if evaluate_condition(e.get("condition"), answers):
+            return {"next_node": e["to"]}
+    return {"leaf": True}
+
+
+def _party_of(definition: dict, node_key: Optional[str]) -> Optional[str]:
+    node = _node_by_key(definition, node_key)
+    return node.get("party") if node else None
 
 
 def _load_service_key(config: Config):

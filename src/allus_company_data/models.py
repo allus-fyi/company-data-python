@@ -440,6 +440,89 @@ class Document:
         return [cls.from_api(o, decrypt_value=decrypt_value) for o in items]
 
 
+# ── flow run ─────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class FlowRun:
+    """A contract-flow run (company-data side).
+
+    The company is one of the two bound parties. ``bindings`` maps each party
+    key to the bound ``user_id`` (the company's own ``user_id`` is
+    ``company_user_id``); ``answers`` are the per-party encrypted answer copies
+    (the company reads the rows whose ``for_user_id == company_user_id``,
+    decryptable with the service private key); ``definition`` is the pinned
+    flow-version graph (``nodes``, ``edges``, ``parties``, ``output_mode``).
+
+    ``answers`` is kept as the raw list of ``{slug, for_user_id, value}`` rows;
+    the client decrypts the company's copies on demand.
+    """
+
+    id: str
+    flow_id: Optional[str]
+    flow_version: Any
+    service_id: Optional[str]
+    connection_id: Optional[str]
+    company_user_id: Optional[str]
+    bindings: Dict[str, Any]
+    status: Optional[str]
+    current_node: Optional[str]
+    document_id: Optional[str]
+    output_mode: Optional[str]
+    definition: dict
+    answers: List[dict]
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    raw: dict = field(default_factory=dict, repr=False)
+
+    @property
+    def company_party_key(self) -> Optional[str]:
+        """The party key the company is bound to (``bindings[key] == company_user_id``)."""
+        for key, uid in (self.bindings or {}).items():
+            if uid == self.company_user_id:
+                return key
+        return None
+
+    @property
+    def service_user_id(self) -> Optional[str]:
+        """The company's bound user_id — its answer copies use this ``for_user_id``."""
+        return self.company_user_id
+
+    @classmethod
+    def from_api(cls, obj: dict) -> "FlowRun":
+        if not isinstance(obj, dict):
+            obj = {}
+        definition = obj.get("definition")
+        if not isinstance(definition, dict):
+            # The company-data run payload nests the pinned graph as ``definition``;
+            # tolerate a flatter shape where the graph parts ride at the top level.
+            definition = {
+                "nodes": obj.get("nodes", []),
+                "edges": obj.get("edges", []),
+                "parties": obj.get("parties", []),
+                "output_mode": obj.get("output_mode"),
+            }
+        answers = obj.get("answers")
+        return cls(
+            id=obj.get("id"),
+            flow_id=obj.get("flow_id"),
+            flow_version=obj.get("flow_version"),
+            service_id=obj.get("service_id"),
+            connection_id=obj.get("connection_id"),
+            company_user_id=obj.get("company_user_id"),
+            bindings=dict(obj.get("bindings") or {}),
+            status=obj.get("status"),
+            current_node=obj.get("current_node"),
+            document_id=obj.get("document_id"),
+            output_mode=obj.get("output_mode") or (definition.get("output_mode") if isinstance(definition, dict) else None),
+            definition=definition if isinstance(definition, dict) else {},
+            answers=[a for a in (answers or []) if isinstance(a, dict)],
+            created_at=_parse_iso_dt(obj.get("created_at")),
+            updated_at=_parse_iso_dt(obj.get("updated_at")),
+            raw=obj,
+        )
+
+
 # ── log ────────────────────────────────────────────────────────────────────
 
 
@@ -475,6 +558,7 @@ __all__ = [
     "Value",
     "Connection",
     "Change",
+    "FlowRun",
     "LogEntry",
     "STRUCTURED_TYPES",
     "BINARY_TYPES",

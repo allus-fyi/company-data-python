@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allus-company-data"
-version = "0.0.6"
+version = "0.0.7"
 description = "Reference Python SDK for the allus company-data API: typed, plaintext, slug-keyed conclusions with transparent decryption."
 readme = "README.md"
 requires-python = ">=3.11"
