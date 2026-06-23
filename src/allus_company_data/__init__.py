@@ -29,7 +29,8 @@ from .errors import (
     WebhookError,
 )
 from .http import HttpClient
-from .models import Change, Connection, Document, LogEntry, RequestField, Value
+from .flow_condition import evaluate as evaluate_flow_condition
+from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField, Value
 from .pump import Pump
 from .webhooks import handle_webhook, parse_webhook, verify_webhook
 
@@ -59,7 +60,10 @@ __all__ = [
     "Value",
     "Change",
     "Document",
+    "FlowRun",
     "LogEntry",
+    # contract-flow condition evaluator (port of the platform FlowConditionEvaluator)
+    "evaluate_flow_condition",
     # changes pump
     "FileBuffer",
     "Pump",
@@ -73,4 +77,4 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("allus-company-data")
 except Exception:  # running from source, not installed
-    __version__ = "0.0.6"  # keep in sync with pyproject
+    __version__ = "0.0.7"  # keep in sync with pyproject
