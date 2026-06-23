@@ -68,6 +68,7 @@ _CHANGES = f"{_BASE}/changes"
 _REQUEST_FIELDS = f"{_BASE}/request-fields"
 _LOGS = f"{_BASE}/logs"
 _DOCUMENTS = f"{_BASE}/documents"
+_CONNECT_REQUESTS = f"{_BASE}/connect-requests"
 _FLOWS = f"{_BASE}/flows"          # POST /api/company-data/flows/{flowId}/runs
 _FLOW_RUNS = f"{_BASE}/flow-runs"  # list / get / answers / generate
 _KEYS = "/api/keys"
@@ -542,6 +543,27 @@ class Client:
     def delete_document(self, document_id: str) -> None:
         """Delete a document (and its on-disk file)."""
         self._http.delete(f"{_DOCUMENTS}/{document_id}")
+
+    # ── connect requests (service-initiated; idea 2) ────────────────────────────
+
+    def send_connect_request(self, share_code: str) -> str:
+        """Invite a person (by their share code) to connect to THIS service.
+
+        Wraps ``POST /api/company-data/connect-requests`` — auto-scoped to the
+        calling client's service. Fire-and-forget: the person accepts or rejects,
+        and the outcome reaches you only via the change feed / webhooks
+        (``connection_request_accepted`` / ``connection_request_rejected``). No
+        crypto, no key handling (the request carries no values).
+
+        Returns the new ``request_id`` (correlates the later outcome event).
+        """
+        if not share_code or not str(share_code).strip():
+            raise ConfigError("share_code is required")
+        body = self._http.post(_CONNECT_REQUESTS, json_body={"share_code": str(share_code).strip()})
+        rid = body.get("request_id") if isinstance(body, dict) else None
+        if not rid:
+            raise ApiError(0, "company_connections.request_failed", "no request_id in response")
+        return str(rid)
 
     # ── contract-flow runs (company side — the company is a bound party) ─────────
 
