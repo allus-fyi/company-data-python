@@ -642,3 +642,80 @@ def test_document_verbs_hit_right_path(config):
     assert ("PUT", "/documents/d9") in methods
     assert methods.count(("PUT", "/documents/d9")) == 2
     assert ("DELETE", "/documents/d9") in methods
+
+
+# ── connect requests (service-initiated; idea 2) ────────────────────────────────
+
+
+def test_send_connect_request(config):
+    captured = {}
+
+    def write_router(method, url, json_body, data):
+        assert method == "POST" and url.endswith("/company-data/connect-requests")
+        captured["body"] = json_body
+        return FakeResponse(201, json_body={"request_id": "req-1"})
+
+    client, _ = _client_rw(config, _no_get, write_router)
+    rid = client.send_connect_request("ABC123")
+    assert rid == "req-1"
+    assert captured["body"] == {"share_code": "ABC123"}
+
+
+def test_send_connect_request_trims(config):
+    captured = {}
+
+    def write_router(method, url, json_body, data):
+        captured["body"] = json_body
+        return FakeResponse(201, json_body={"request_id": "req-2"})
+
+    client, _ = _client_rw(config, _no_get, write_router)
+    assert client.send_connect_request("  XYZ789 ") == "req-2"
+    assert captured["body"] == {"share_code": "XYZ789"}
+
+
+def test_send_connect_request_blank_raises(config):
+    client, _ = _client_rw(config, _no_get, lambda *a: None)
+    with pytest.raises(ConfigError):
+        client.send_connect_request("   ")
+
+
+def test_send_connect_request_no_id_raises(config):
+    from allus_company_data.errors import ApiError
+
+    def write_router(method, url, json_body, data):
+        return FakeResponse(201, json_body={})
+
+    client, _ = _client_rw(config, _no_get, write_router)
+    with pytest.raises(ApiError):
+        client.send_connect_request("ABC123")
+
+
+def test_change_parses_connect_request_outcome_events(config):
+    """connection_request_accepted/_rejected surface request_id; no slug/value."""
+    from allus_company_data.models import Change
+
+    accepted = Change.from_api(
+        {"id": "c1", "event": "connection_request_accepted", "request_id": "req-9",
+         "person_user_id": "person-1", "share_code": "P1CODE", "at": "2026-06-23T10:00:00Z"},
+        type_for_slug=lambda s: None, decrypt_value=lambda v: v,
+    )
+    assert accepted.event == "connection_request_accepted"
+    assert accepted.request_id == "req-9"
+    assert accepted.person_id == "person-1"
+    assert accepted.share_code == "P1CODE"
+    assert accepted.slug is None and accepted.value is None
+
+    rejected = Change.from_api(
+        {"id": "c2", "event": "connection_request_rejected", "request_id": "req-8",
+         "person_user_id": "person-2", "at": "2026-06-23T11:00:00Z"},
+        type_for_slug=lambda s: None, decrypt_value=lambda v: v,
+    )
+    assert rejected.event == "connection_request_rejected"
+    assert rejected.request_id == "req-8"
+
+    # request_id stays None for unrelated events.
+    field_evt = Change.from_api(
+        {"id": "c3", "event": "connection_created", "person_user_id": "person-3"},
+        type_for_slug=lambda s: None, decrypt_value=lambda v: v,
+    )
+    assert field_evt.request_id is None
