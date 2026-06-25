@@ -490,18 +490,20 @@ class Client:
         created = self._http.post(_DOCUMENTS, json_body=body)
         doc = Document.from_api(_doc_obj(created), decrypt_value=self._decrypt_value)
         if per_person:
-            # Encrypt the file bytes (EVERY per-person doc): wrap the file envelope string,
-            # then send the wrapper as bytes.
+            # EVERY per-person file doc is E2E-encrypted: wrap the file envelope string,
+            # encrypt it for the recipient, then POST {"value": "<wrapper JSON string>"}.
+            # The /file endpoint requires `value` to be a STRING (isValidEncryptedBlob),
+            # so the wrapper dict is json.dumps'd; the bare wrapper was rejected (400).
             envelope = json.dumps({"file": _data_uri(file_bytes, file_mime)})
             wrapper = encrypt_for_public_key(envelope, pubkey)
             self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
-                            raw_body=json.dumps(wrapper).encode("utf-8"),
-                            content_type="application/json")
+                            json_body={"value": json.dumps(wrapper)})
         else:
-            # Broadcast — raw plaintext bytes.
+            # Broadcast — plaintext: POST {"file": "<base64 data URI>", "original_name"}.
+            # The API rejected the old raw-bytes body (documents.invalid_payload: file required).
             self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
-                            raw_body=file_bytes,
-                            content_type=file_mime or "application/octet-stream")
+                            json_body={"file": _data_uri(file_bytes, file_mime),
+                                       "original_name": name})
         return doc
 
     def list_documents(self, *, person_user_id: Optional[str] = None,
