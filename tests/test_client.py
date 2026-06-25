@@ -556,7 +556,7 @@ def test_create_document_invalid_kind_raises(config):
                                kind="invalid", json_value={"a": 1})
 
 
-def test_create_document_file_broadcast_uploads_raw_bytes(config):
+def test_create_document_file_broadcast_uploads_file_data_uri(config):
     calls = []
 
     def write_router(method, url, json_body, data):
@@ -576,10 +576,16 @@ def test_create_document_file_broadcast_uploads_raw_bytes(config):
                            file_bytes=b"%PDF-1.4 x", file_mime="application/pdf")
     assert calls[0]["url"].endswith("/documents") and calls[0]["json"]["target"] is None
     assert calls[1]["url"].endswith("/documents/f1/file")
-    assert calls[1]["data"] == b"%PDF-1.4 x"  # raw plaintext bytes
+    # Broadcast file upload is JSON {"file": "<data URI>", "original_name": <name>}.
+    body = calls[1]["json"]
+    assert calls[1]["data"] is None  # NOT raw bytes
+    assert set(body.keys()) == {"file", "original_name"}
+    assert body["original_name"] == "C"
+    assert body["file"].startswith("data:application/pdf;base64,")
+    assert base64.b64decode(body["file"].split(",", 1)[1]) == b"%PDF-1.4 x"
 
 
-def test_create_document_file_per_person_uploads_wrapper_bytes(config, vector):
+def test_create_document_file_per_person_uploads_value_wrapper_string(config, vector):
     spki = _vector_pub_spki_b64(vector)
     calls = []
 
@@ -587,7 +593,7 @@ def test_create_document_file_per_person_uploads_wrapper_bytes(config, vector):
         return FakeResponse(200, json_body={"public_key": spki})
 
     def write_router(method, url, json_body, data):
-        calls.append({"url": url, "data": data})
+        calls.append({"url": url, "json": json_body, "data": data})
         if url.endswith("/documents"):
             return FakeResponse(201, json_body={
                 "id": "f2", "kind": "document", "name": "C", "description": None,
@@ -601,10 +607,13 @@ def test_create_document_file_per_person_uploads_wrapper_bytes(config, vector):
     client.create_document(name="C", payload_kind="file", file_bytes=b"hello-bytes",
                            file_mime="application/pdf", person_user_id="u1",
                            share_code="ABC123", is_private=True)
-    upload = calls[1]["data"]
-    assert isinstance(upload, (bytes, bytearray))
-    wrapper = json.loads(upload.decode("utf-8"))
-    assert wrapper.get("_enc") == 1  # ciphertext wrapper bytes, not the raw file
+    # Per-person file upload is JSON {"value": "<wrapper serialized to a STRING>"}.
+    body = calls[1]["json"]
+    assert calls[1]["data"] is None  # NOT a bare wrapper / raw bytes
+    assert set(body.keys()) == {"value"}
+    assert isinstance(body["value"], str)  # the API requires a STRING value
+    wrapper = json.loads(body["value"])
+    assert wrapper.get("_enc") == 1  # ciphertext wrapper, not the raw file
     # decrypt → the {"file":"data:...base64,..."} envelope holding the original bytes
     from allus_company_data.crypto import decrypt, load_private_key
     priv = load_private_key(
