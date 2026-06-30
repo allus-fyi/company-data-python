@@ -534,6 +534,37 @@ def test_create_document_per_person_encrypts_for_both_privacy(config, vector):
         assert doc.id == "d2"
 
 
+def test_create_document_share_code_only_is_per_person(config, vector):
+    # A share_code target (no connection_id/person_user_id) must be PER-PERSON:
+    # value encrypted to the recipient + target {"share_code"} — NOT a plaintext broadcast.
+    spki = _vector_pub_spki_b64(vector)
+    keys_fetched = {"n": 0}
+
+    def get_router(url, params):
+        assert url.endswith("/api/keys/ABC123")
+        keys_fetched["n"] += 1
+        return FakeResponse(200, json_body={"public_key": spki})
+
+    captured = {}
+
+    def write_router(method, url, json_body, data):
+        captured["body"] = json_body
+        return FakeResponse(201, json_body={
+            "id": "d3", "kind": "document", "name": "PP", "description": None,
+            "status": "active", "payload_kind": "json", "is_private": False,
+            "value": json_body["value"], "metadata": None,
+            "created_at": None, "updated_at": None,
+        })
+
+    client, _ = _client_rw(config, get_router, write_router)
+    client.create_document(name="PP", payload_kind="json",
+                           json_value={"plan": "pro"}, share_code="ABC123")
+    assert keys_fetched["n"] == 1  # recipient key fetched → encrypted
+    assert captured["body"]["target"] == {"share_code": "ABC123"}  # per-person, not broadcast
+    val = captured["body"]["value"]
+    assert isinstance(val, dict) and val.get("_enc") == 1  # ENCRYPTED, not plaintext
+
+
 def test_create_document_private_broadcast_raises(config):
     client, _ = _client_rw(config, _no_get, lambda *a: None)
     with pytest.raises(ConfigError):
