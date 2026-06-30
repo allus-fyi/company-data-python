@@ -447,6 +447,10 @@ class Client:
             target = {"connection_id": connection_id}
         elif person_user_id:
             target = {"person_user_id": person_user_id}
+        elif share_code:
+            # A share_code target is PER-PERSON (encrypted to that recipient), not a
+            # broadcast. Without this it fell through to the plaintext all-recipients path.
+            target = {"share_code": share_code}
         # (else: broadcast — target stays None)
 
         per_person = target is not None
