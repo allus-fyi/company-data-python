@@ -31,7 +31,7 @@ import pytest
 from allus_company_data.client import Client
 from allus_company_data.config import Config
 from allus_company_data.crypto import BinaryHandle
-from allus_company_data.errors import ConfigError
+from allus_company_data.errors import ApiError, ConfigError
 from allus_company_data.http import HttpClient
 from allus_company_data.models import Connection, LogEntry, RequestField
 
@@ -623,6 +623,33 @@ def test_broadcast_original_name_explicit_file_name_wins(config):
     assert _broadcast_file_original_name(config, name="Anything",
                                          file_mime="application/pdf",
                                          file_name="contract-v2.pdf") == "contract-v2.pdf"
+
+
+def test_create_document_file_upload_failure_rolls_back(config):
+    # The metadata row is created before the bytes upload; if the upload fails,
+    # the just-created doc must be best-effort DELETEd so no dangling _pending row
+    # is left, and the original upload error must propagate.
+    calls = []
+
+    def write_router(method, url, json_body, data):
+        calls.append({"method": method, "url": url})
+        if method == "POST" and url.endswith("/documents"):
+            return FakeResponse(201, json_body={
+                "id": "f1", "kind": "document", "name": "C", "description": None,
+                "status": "active", "payload_kind": "file", "is_private": False,
+                "value": {"_pending": True}, "metadata": None,
+                "created_at": None, "updated_at": None,
+            })
+        if method == "POST" and url.endswith("/documents/f1/file"):
+            return FakeResponse(400, json_body={"error_key": "documents.bad_mime", "error": "nope"})
+        return FakeResponse(200, json_body={})  # the rollback DELETE
+
+    client, _ = _client_rw(config, _no_get, write_router)
+    with pytest.raises(ApiError):
+        client.create_document(name="C", payload_kind="file",
+                               file_bytes=b"%PDF", file_mime="application/pdf")
+    assert any(c["method"] == "DELETE" and c["url"].endswith("/documents/f1") for c in calls), \
+        "expected a rollback DELETE of the dangling document"
 
 
 def test_create_document_file_per_person_uploads_value_wrapper_string(config, vector):

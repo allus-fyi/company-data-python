@@ -491,21 +491,32 @@ class Client:
             raise ConfigError("file_bytes is required for payload_kind='file'")
         created = self._http.post(_DOCUMENTS, json_body=body)
         doc = Document.from_api(_doc_obj(created), decrypt_value=self._decrypt_value)
-        if per_person:
-            # EVERY per-person file doc is E2E-encrypted: wrap the file envelope string,
-            # encrypt it for the recipient, then POST {"value": "<wrapper JSON string>"}.
-            # The /file endpoint requires `value` to be a STRING (isValidEncryptedBlob),
-            # so the wrapper dict is json.dumps'd; the bare wrapper was rejected (400).
-            envelope = json.dumps({"file": _data_uri(file_bytes, file_mime)})
-            wrapper = encrypt_for_public_key(envelope, pubkey)
-            self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
-                            json_body={"value": json.dumps(wrapper)})
-        else:
-            # Broadcast — plaintext: POST {"file": "<base64 data URI>", "original_name"}.
-            # The API rejected the old raw-bytes body (documents.invalid_payload: file required).
-            self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
-                            json_body={"file": _data_uri(file_bytes, file_mime),
-                                       "original_name": _broadcast_original_name(file_name, name, file_mime)})
+        # The metadata row exists before the bytes are uploaded; if the upload
+        # fails, best-effort delete it so a failed create_document leaves no
+        # dangling {"_pending": true} document. Cleanup errors are swallowed and
+        # the ORIGINAL upload error is re-raised.
+        try:
+            if per_person:
+                # EVERY per-person file doc is E2E-encrypted: wrap the file envelope string,
+                # encrypt it for the recipient, then POST {"value": "<wrapper JSON string>"}.
+                # The /file endpoint requires `value` to be a STRING (isValidEncryptedBlob),
+                # so the wrapper dict is json.dumps'd; the bare wrapper was rejected (400).
+                envelope = json.dumps({"file": _data_uri(file_bytes, file_mime)})
+                wrapper = encrypt_for_public_key(envelope, pubkey)
+                self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
+                                json_body={"value": json.dumps(wrapper)})
+            else:
+                # Broadcast — plaintext: POST {"file": "<base64 data URI>", "original_name"}.
+                # The API rejected the old raw-bytes body (documents.invalid_payload: file required).
+                self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
+                                json_body={"file": _data_uri(file_bytes, file_mime),
+                                           "original_name": _broadcast_original_name(file_name, name, file_mime)})
+        except Exception:
+            try:
+                self._http.delete(f"{_DOCUMENTS}/{doc.id}")
+            except Exception:
+                pass
+            raise
         return doc
 
     def list_documents(self, *, person_user_id: Optional[str] = None,
