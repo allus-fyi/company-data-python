@@ -416,13 +416,15 @@ class Client:
         connection_id: Optional[str] = None, person_user_id: Optional[str] = None,
         share_code: Optional[str] = None,            # recipient handle for per-person encryption
         json_value: Any = None, file_bytes: Optional[bytes] = None,
-        file_mime: Optional[str] = None,
+        file_mime: Optional[str] = None, file_name: Optional[str] = None,
         requires_signature: bool = False, requires_acceptance: bool = False,
         metadata: Optional[dict] = None, status: Optional[str] = None,
     ) -> Document:
         """Create a company document for a connection / person (PER-PERSON), or BROADCAST (no target).
 
         payload_kind='json' → json_value (object). payload_kind='file' → file_bytes (+ file_mime).
+        For a BROADCAST file the server validates a real file extension; one is derived from
+        file_mime when `name` has none. Pass `file_name` to set original_name explicitly.
 
         Encryption is decided by the TARGET, not by is_private:
           PER-PERSON (connection_id/person_user_id given) → the value is ALWAYS encrypted FOR
@@ -503,7 +505,7 @@ class Client:
             # The API rejected the old raw-bytes body (documents.invalid_payload: file required).
             self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
                             json_body={"file": _data_uri(file_bytes, file_mime),
-                                       "original_name": name})
+                                       "original_name": _broadcast_original_name(file_name, name, file_mime)})
         return doc
 
     def list_documents(self, *, person_user_id: Optional[str] = None,
@@ -805,6 +807,34 @@ def _data_uri(file_bytes: bytes, mime: Optional[str]) -> str:
     """Build a ``data:<mime>;base64,<…>`` URI for the per-person file envelope."""
     b64 = base64.b64encode(file_bytes).decode("ascii")
     return f"data:{mime or 'application/octet-stream'};base64,{b64}"
+
+
+# Allowed broadcast-document MIME → file extension (mirrors the API's allowlist).
+_MIME_EXT = {
+    "application/pdf": "pdf",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "image/png": "png",
+    "image/jpeg": "jpg",
+}
+_ALLOWED_DOC_EXTS = {"pdf", "doc", "docx", "xls", "xlsx", "png", "jpg", "jpeg"}
+
+
+def _broadcast_original_name(file_name: Optional[str], name: str, file_mime: Optional[str]) -> str:
+    """``original_name`` for a broadcast file upload. The API validates its
+    extension against an allowlist, but ``name`` is a human label that often has
+    no extension. Use an explicit ``file_name``; else keep ``name`` if it already
+    ends in an allowed extension; else append the extension derived from
+    ``file_mime`` (so ``"Price list"`` + ``application/pdf`` → ``"Price list.pdf"``)."""
+    if file_name:
+        return file_name
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext in _ALLOWED_DOC_EXTS:
+        return name
+    derived = _MIME_EXT.get((file_mime or "").lower())
+    return f"{name}.{derived}" if derived else name
 
 
 def _list_items(body: Any) -> List[Any]:

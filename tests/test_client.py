@@ -580,9 +580,49 @@ def test_create_document_file_broadcast_uploads_file_data_uri(config):
     body = calls[1]["json"]
     assert calls[1]["data"] is None  # NOT raw bytes
     assert set(body.keys()) == {"file", "original_name"}
-    assert body["original_name"] == "C"
+    # An extensionless name gets the extension derived from file_mime (the API
+    # validates original_name's extension against an allowlist).
+    assert body["original_name"] == "C.pdf"
     assert body["file"].startswith("data:application/pdf;base64,")
     assert base64.b64decode(body["file"].split(",", 1)[1]) == b"%PDF-1.4 x"
+
+
+def _broadcast_file_original_name(config, *, name, file_mime, file_name=None):
+    """Run a broadcast file create and return the original_name sent on /file."""
+    calls = []
+
+    def write_router(method, url, json_body, data):
+        calls.append({"url": url, "json": json_body})
+        if url.endswith("/documents"):
+            return FakeResponse(201, json_body={
+                "id": "f1", "kind": "document", "name": name, "description": None,
+                "status": "active", "payload_kind": "file", "is_private": False,
+                "value": {"_pending": True}, "metadata": None,
+                "created_at": None, "updated_at": None,
+            })
+        return FakeResponse(200, json_body={"id": "f1"})
+
+    client, _ = _client_rw(config, _no_get, write_router)
+    client.create_document(name=name, payload_kind="file", file_bytes=b"%PDF-1.4 x",
+                           file_mime=file_mime, file_name=file_name)
+    return calls[1]["json"]["original_name"]
+
+
+def test_broadcast_original_name_keeps_existing_allowed_extension(config):
+    # A name that already ends in an allowed extension is sent unchanged (no doubling).
+    assert _broadcast_file_original_name(config, name="Price list.pdf",
+                                         file_mime="application/pdf") == "Price list.pdf"
+
+
+def test_broadcast_original_name_derives_from_mime(config):
+    assert _broadcast_file_original_name(config, name="Logo",
+                                         file_mime="image/png") == "Logo.png"
+
+
+def test_broadcast_original_name_explicit_file_name_wins(config):
+    assert _broadcast_file_original_name(config, name="Anything",
+                                         file_mime="application/pdf",
+                                         file_name="contract-v2.pdf") == "contract-v2.pdf"
 
 
 def test_create_document_file_per_person_uploads_value_wrapper_string(config, vector):
