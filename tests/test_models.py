@@ -402,6 +402,20 @@ def test_change_document_status_changed_carries_action(decrypt_value):
     assert chg.action == "signed"
     assert chg.document_id == "doc-7" and chg.status == "active"
     assert chg.slug is None and chg.value is None
+    assert chg.note is None  # no cancellation note on a sign event
+
+
+def test_change_document_status_changed_carries_cancel_note(decrypt_value):
+    from allus_company_data.models import Change
+
+    body = {"changes": [{
+        "id": "chg-cancel", "event": "document_status_changed",
+        "person_user_id": "u-2", "action": "cancelled", "note": "Too expensive",
+        "document_id": "doc-9", "status": "ended", "at": "2026-06-30T10:00:00Z",
+    }]}
+    [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, decrypt_value=decrypt_value)
+    assert chg.action == "cancelled" and chg.note == "Too expensive"
+    assert chg.status == "ended"
 
 
 def test_document_model_carries_contract_flags_and_signatures():

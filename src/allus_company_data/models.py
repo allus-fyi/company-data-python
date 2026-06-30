@@ -305,6 +305,7 @@ class Change:
     document_id: Optional[str] = None  # set on document_status_changed
     status: Optional[str] = None       # set on document_status_changed
     action: Optional[str] = None       # set on document_status_changed: signed | accepted | cancelled
+    note: Optional[str] = None         # set on document_status_changed: the person's optional cancellation note
     request_id: Optional[str] = None   # set on connection_request_accepted | connection_request_rejected
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
@@ -346,6 +347,7 @@ class Change:
             document_id=obj.get("document_id"),
             status=obj.get("status") if event == "document_status_changed" else None,
             action=obj.get("action") if event == "document_status_changed" else None,
+            note=obj.get("note") if event == "document_status_changed" else None,
             request_id=obj.get("request_id")
             if event in ("connection_request_accepted", "connection_request_rejected")
             else None,
