@@ -306,6 +306,9 @@ class Change:
     status: Optional[str] = None       # set on document_status_changed
     action: Optional[str] = None       # set on document_status_changed: signed | accepted | cancelled
     note: Optional[str] = None         # set on document_status_changed: the person's optional cancellation note
+    method: Optional[str] = None       # set on a signature: biometric | twofa | email | custodian
+    content_sha256: Optional[str] = None  # set on a signature: SHA-256 of the signed content
+    signed_at: Optional[str] = None    # set on a signature: ISO timestamp the signature was recorded
     request_id: Optional[str] = None   # set on connection_request_accepted | connection_request_rejected
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
@@ -348,6 +351,9 @@ class Change:
             status=obj.get("status") if event == "document_status_changed" else None,
             action=obj.get("action") if event == "document_status_changed" else None,
             note=obj.get("note") if event == "document_status_changed" else None,
+            method=obj.get("method") if event == "document_status_changed" else None,
+            content_sha256=obj.get("content_sha256") if event == "document_status_changed" else None,
+            signed_at=obj.get("signed_at") if event == "document_status_changed" else None,
             request_id=obj.get("request_id")
             if event in ("connection_request_accepted", "connection_request_rejected")
             else None,
