@@ -488,6 +488,7 @@ class FlowRun:
     output_mode: Optional[str]
     definition: dict
     answers: List[dict]
+    reference_date: Optional[str] = None  # immutable run "today" (raw YYYY-MM-DD string)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
@@ -534,6 +535,7 @@ class FlowRun:
             output_mode=obj.get("output_mode") or (definition.get("output_mode") if isinstance(definition, dict) else None),
             definition=definition if isinstance(definition, dict) else {},
             answers=[a for a in (answers or []) if isinstance(a, dict)],
+            reference_date=obj.get("reference_date"),
             created_at=_parse_iso_dt(obj.get("created_at")),
             updated_at=_parse_iso_dt(obj.get("updated_at")),
             raw=obj,

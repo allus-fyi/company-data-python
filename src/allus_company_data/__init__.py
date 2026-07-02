@@ -29,7 +29,13 @@ from .errors import (
     WebhookError,
 )
 from .http import HttpClient
-from .flow_condition import evaluate as evaluate_flow_condition
+from .flow_condition import (
+    compute_constants,
+    eval_expr,
+    evaluate,
+    evaluate_flow_condition,
+    resolved_constants,
+)
 from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField, Value
 from .pump import Pump
 from .webhooks import handle_webhook, parse_webhook, verify_webhook
@@ -62,8 +68,12 @@ __all__ = [
     "Document",
     "FlowRun",
     "LogEntry",
-    # contract-flow condition evaluator (port of the platform FlowConditionEvaluator)
+    # contract-flow condition evaluator + computed constants (issue #79)
+    "evaluate",
+    "eval_expr",
+    "compute_constants",
     "evaluate_flow_condition",
+    "resolved_constants",
     # changes pump
     "FileBuffer",
     "Pump",
