@@ -29,5 +29,5 @@ def test_vector_case(case):
 
 
 def test_vector_has_all_cases():
-    # Guard: the committed vector is the 27-case set (catch an accidental truncation).
-    assert len(_cases()) == 27
+    # Guard: the committed vector is the 35-case set (catch an accidental truncation).
+    assert len(_cases()) == 35

@@ -64,6 +64,12 @@ def evaluate(condition: Any, answers: Mapping[str, Any]) -> bool:
         return isinstance(target, list) and any(_loose_eq(x, val) for x in target)
     if op == "nin":
         return not (isinstance(target, list) and any(_loose_eq(x, val) for x in target))
+    # #102 substring ops (text): contains needs an answer (like in); not_contains is true
+    # when unanswered (like nin). Case-sensitive; empty needle counts as contained.
+    if op == "contains":
+        return _answered(val) and _str(target) in _str(val)
+    if op == "not_contains":
+        return not (_answered(val) and _str(target) in _str(val))
 
     if not _answered(val):
         return False
