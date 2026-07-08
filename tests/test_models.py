@@ -116,6 +116,20 @@ def test_request_field_coerces_xml_bool_strings():
     assert f.mandatory is True
 
 
+def test_request_field_includes_audience():
+    """B2B (#163): a request row carries its audience; absent → None (older API)."""
+    body = {"request_fields": [
+        {"slug": "billing", "label": "Billing", "type": "email",
+         "one_time": False, "mandatory_provide": False, "mandatory_connected": False,
+         "audience": "company"},
+        {"slug": "ref", "label": "Ref", "type": "text",
+         "one_time": False, "mandatory_provide": False, "mandatory_connected": False},
+    ]}
+    fields = RequestField.list_from_api(body)
+    assert fields[0].audience == "company"
+    assert fields[1].audience is None
+
+
 # ── Connection detail → typed, slug-keyed values ─────────────────────────────
 
 
@@ -368,6 +382,42 @@ def test_change_includes_share_code(decrypt_value):
     )
     assert changes[0].share_code == "ABC123"
     assert changes[1].share_code is None
+
+
+def test_change_includes_customer_type(decrypt_value):
+    """B2B (#163): a change event carries the customer_type; absent → None."""
+    body = {"changes": [
+        {"id": "chg-1", "event": "connection_created",
+         "person_user_id": "co-1", "customer_type": "company",
+         "at": "2026-07-07T12:00:00Z"},
+        {"id": "chg-2", "event": "connection_created",
+         "person_user_id": "person-2", "at": "2026-07-07T12:00:00Z"},  # no customer_type -> None
+    ]}
+    changes = Change.list_from_api(
+        body, type_for_slug=lambda s: None, decrypt_value=decrypt_value
+    )
+    assert changes[0].customer_type == "company"
+    assert changes[1].customer_type is None
+
+
+def test_connection_includes_customer_type_and_share_code(decrypt_value):
+    """B2B (#163): a connection carries customer_type + share_code (both nullable)."""
+    from allus_company_data.models import Connection
+
+    obj = {"connection_id": "c-1", "user_id": "co-9",
+           "customer_type": "company", "share_code": "PARTNER", "values": {}}
+    conn = Connection.from_api(
+        obj, type_for_slug=lambda s: None, decrypt_value=decrypt_value
+    )
+    assert conn.customer_type == "company"
+    assert conn.share_code == "PARTNER"
+
+    bare = Connection.from_api(
+        {"connection_id": "c-2", "user_id": "p-1", "values": {}},
+        type_for_slug=lambda s: None, decrypt_value=decrypt_value,
+    )
+    assert bare.customer_type is None
+    assert bare.share_code is None
 
 
 # ── document_status_changed change + Document model ─────────────────────────────

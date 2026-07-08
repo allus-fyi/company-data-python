@@ -95,6 +95,9 @@ class RequestField:
     type: str
     one_time: bool
     mandatory: bool
+    # Which customer TYPE this request row applies to: "person" | "company" | "both"
+    # (B2B, #163). Absent on an older API → None (treat as "person").
+    audience: Optional[str] = None
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -108,6 +111,7 @@ class RequestField:
                 _coerce_bool(obj.get("mandatory_provide"))
                 or _coerce_bool(obj.get("mandatory_connected"))
             ),
+            audience=obj.get("audience"),
             raw=obj,
         )
 
@@ -226,6 +230,12 @@ class Connection:
     display_name: Optional[str]
     connected_at: Optional[datetime]
     values: Dict[str, Value] = field(default_factory=dict)
+    # The connected customer's TYPE: "person" | "company" (B2B, #163). Absent on an
+    # older API → None (treat as "person"). ``person_id`` keeps its name (the wire
+    # field ``person_user_id``) but semantically holds the customer's user id.
+    customer_type: Optional[str] = None
+    # The customer's profile share code (previously only reachable via ``.raw``).
+    share_code: Optional[str] = None
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -275,6 +285,8 @@ class Connection:
             display_name=display_name,
             connected_at=connected_at,
             values=values,
+            customer_type=obj.get("customer_type") or identity.get("customer_type"),
+            share_code=obj.get("share_code") or identity.get("share_code"),
             raw=obj,
         )
 
@@ -299,6 +311,7 @@ class Change:
     event: str
     person_id: Optional[str]
     share_code: Optional[str] = None  # the person's profile share code (every event; may be null)
+    customer_type: Optional[str] = None  # "person" | "company" (B2B, #163); absent on older API → None
     slug: Optional[str] = None
     value: Any = None
     live: Optional[bool] = None
@@ -345,6 +358,7 @@ class Change:
             event=event,
             person_id=obj.get("person_user_id") or obj.get("person_id"),
             share_code=obj.get("share_code"),
+            customer_type=obj.get("customer_type"),
             slug=slug,
             value=value,
             live=live,

@@ -31,6 +31,10 @@ _ENV_MAP = {
     "client_secret": "ALLUS_CLIENT_SECRET",
     "service_private_key": "ALLUS_SERVICE_PRIVATE_KEY",
     "key_passphrase": "ALLUS_KEY_PASSPHRASE",
+    # Customer role (B2B, #168): the acct_* client pair the connecting company
+    # authenticates with. Distinct from the per-service (client_id/secret) pair.
+    "customer_client_id": "ALLUS_CUSTOMER_CLIENT_ID",
+    "customer_client_secret": "ALLUS_CUSTOMER_CLIENT_SECRET",
     "account_private_key": "ALLUS_ACCOUNT_PRIVATE_KEY",
     "account_passphrase": "ALLUS_ACCOUNT_PASSPHRASE",
     "cache_dir": "ALLUS_CACHE_DIR",
@@ -50,6 +54,15 @@ _REQUIRED = (
     "key_passphrase",
 )
 
+# Customer role (#168): the acct_* pair + the account key that decrypts received
+# documents/flow copies. No service PEM — a customer never decrypts a person's field.
+_REQUIRED_CUSTOMER = (
+    "api_url",
+    "customer_client_id",
+    "customer_client_secret",
+    "account_private_key",
+)
+
 _VALID_FORMATS = ("json", "xml")
 
 
@@ -58,10 +71,16 @@ class Config:
     """The whole SDK configuration. Keys live here and nowhere else."""
 
     api_url: str
-    client_id: str
-    client_secret: str
-    service_private_key: str  # path to the OpenSSL-encrypted PKCS#8 PEM
-    key_passphrase: str       # decrypts the service PEM in memory
+    # Service role (per-service data client). Optional so a CUSTOMER-role config
+    # (which uses customer_client_id/secret instead) can omit them.
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    service_private_key: Optional[str] = None  # path to the OpenSSL-encrypted PKCS#8 PEM
+    key_passphrase: Optional[str] = None       # decrypts the service PEM in memory
+
+    # Customer role (#168): the acct_* client pair the connecting company uses.
+    customer_client_id: Optional[str] = None
+    customer_client_secret: Optional[str] = None
 
     # OPTIONAL — only needed if you receive encrypt_payload webhooks.
     account_private_key: Optional[str] = None
@@ -91,8 +110,7 @@ class Config:
     SINGLE_WEBHOOK_KEY = "__single__"
 
     @classmethod
-    def from_file(cls, path: str) -> "Config":
-        """Load from a JSON file; env vars override file values."""
+    def _load_json(cls, path: str) -> dict:
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -102,15 +120,31 @@ class Config:
             raise ConfigError(f"config file is not valid JSON: {path}: {exc}") from exc
         if not isinstance(data, dict):
             raise ConfigError(f"config file must be a JSON object: {path}")
-        return cls._build(data)
+        return data
+
+    @classmethod
+    def from_file(cls, path: str) -> "Config":
+        """Load a SERVICE-role config from a JSON file; env vars override file values."""
+        return cls._build(cls._load_json(path))
 
     @classmethod
     def from_env(cls) -> "Config":
-        """Build entirely from ``ALLUS_*`` env vars."""
+        """Build a SERVICE-role config entirely from ``ALLUS_*`` env vars."""
         return cls._build({})
 
     @classmethod
-    def _build(cls, data: dict) -> "Config":
+    def from_customer_file(cls, path: str) -> "Config":
+        """Load a CUSTOMER-role config (#168) — requires the acct_* pair + account key,
+        not the service PEM. Env vars override file values."""
+        return cls._build(cls._load_json(path), role="customer")
+
+    @classmethod
+    def from_customer_env(cls) -> "Config":
+        """Build a CUSTOMER-role config entirely from ``ALLUS_*`` env vars."""
+        return cls._build({}, role="customer")
+
+    @classmethod
+    def _build(cls, data: dict, role: str = "service") -> "Config":
         """Merge file values with env overrides, validate, and construct."""
         values: dict = {}
 
@@ -184,8 +218,9 @@ class Config:
                 "configure at most one webhook auth method (found: " + ", ".join(present) + ")"
             )
 
-        # Required fields (fail fast).
-        missing = [name for name in _REQUIRED if not values.get(name)]
+        # Required fields (fail fast) — role-dependent.
+        required = _REQUIRED_CUSTOMER if role == "customer" else _REQUIRED
+        missing = [name for name in required if not values.get(name)]
         if missing:
             raise ConfigError(
                 "missing required config field(s): " + ", ".join(missing)

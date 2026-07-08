@@ -12,6 +12,8 @@ buffer + pump), the :class:`Client` facade, and the webhook receiver helpers.
 
 from .buffer import FileBuffer
 from .client import Client
+from .customer import CustomerClient
+from .customer_models import CustomerConnection, CustomerServiceLink
 from .config import Config
 from .crypto import (
     BinaryHandle,
@@ -43,6 +45,10 @@ from .webhooks import handle_webhook, parse_webhook, verify_webhook
 __all__ = [
     # client facade — the main entry point
     "Client",
+    # customer role (b2b, #168)
+    "CustomerClient",
+    "CustomerConnection",
+    "CustomerServiceLink",
     # config
     "Config",
     # crypto
@@ -87,4 +93,4 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("allus-company-data")
 except Exception:  # running from source, not installed
-    __version__ = "0.0.11"  # keep in sync with pyproject
+    __version__ = "0.0.12"  # keep in sync with pyproject
