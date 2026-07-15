@@ -357,10 +357,17 @@ source slug, no `field_id`, not even via `.raw`.
 
 | Field type | Python `value` |
 |------------|----------------|
-| `email`, `phone`, `url`, `text` | `str` |
+| `email`, `phone`, `url`, `text` | `str` — `phone` is a single E.164-style string (`+` and digits) |
+| `country`, `nationality` | `str` — an ISO 3166-1 alpha-2 code (e.g. `"US"`, `"NL"`); not a display name |
 | `address`, `bank`, `creditcard` | `dict` — the decrypted plaintext is a JSON object, parsed for you |
 | `date`, `date_of_birth` | `datetime.date` (falls back to the raw string if it can't be parsed) |
 | `photo`, `document`, `legal_document` | a lazy `BinaryHandle` — see below |
+
+`country`/`nationality` values are 2-letter ISO codes, and an `address`'s
+`country`/`state` sub-fields are an ISO alpha-2 code / USPS 2-letter state code
+respectively. `is_field_value_valid(type, value)` validates these against the
+bundled country dataset; `is_valid_country_code(code)` / `dial_code_for(code)`
+check a code or look up its E.164 dial code.
 
 ```python
 addr = conn.values["home_address"].value     # dict, e.g. {"street": "...", "city": "...", ...}

@@ -19,6 +19,13 @@ import json
 import re
 from typing import Any, Optional
 
+from .country_data import COUNTRY_CODES, DIAL_CODES, US_STATE_CODES
+
+# #303: country/nationality store an ISO 3166-1 alpha-2 code; address state = USPS 2-letter code.
+# The code lists come from the generated country data (do NOT inline them — they would rot).
+_COUNTRY_CODE_SET = frozenset(COUNTRY_CODES)
+_US_STATE_CODE_SET = frozenset(US_STATE_CODES)
+
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _URL_RE = re.compile(r"^https?://[^\s/$.?#][^\s]*\.[^\s]{2,}$", re.IGNORECASE)
 _MIME_RE = re.compile(r"^[\w.+-]+/[\w.+-]+$")
@@ -36,7 +43,8 @@ _GENDER = ("Male", "Female", "Non-binary", "Prefer not to say")
 _OBJ: dict[str, dict[str, dict]] = {
     "address": {
         "postal_code": {"re": re.compile(r"^[A-Za-z0-9][A-Za-z0-9 -]{1,9}$")},
-        "street": {}, "building_number": {}, "affix": {}, "city": {}, "state": {}, "country": {},
+        "country": {"kind": "countryCode"}, "state": {"kind": "usState"},
+        "street": {}, "building_number": {}, "affix": {}, "city": {},
     },
     "creditcard": {
         "number": {"kind": "card"},
@@ -69,6 +77,7 @@ _RULES: dict[str, dict] = {
     "address": {"kind": "object"}, "creditcard": {"kind": "object"}, "bank": {"kind": "object"},
     "document": {"kind": "object"}, "legal_document": {"kind": "object"},
     "number": {"kind": "number"}, "boolean": {"kind": "boolean"},
+    "country": {"kind": "countryCode"}, "nationality": {"kind": "countryCode"},
     # text + unknown => no rule => accept anything
 }
 
@@ -137,6 +146,10 @@ def _apply_kind(kind: str, value: str) -> bool:
         return _finite_number(value)
     if kind == "boolean":
         return value == "true" or value == "false"
+    if kind == "countryCode":
+        return value in _COUNTRY_CODE_SET
+    if kind == "usState":
+        return value in _US_STATE_CODE_SET
     return True
 
 
@@ -196,4 +209,19 @@ def field_value_error(field_type: Optional[str], value: Any) -> Optional[str]:
     return None if is_field_value_valid(field_type, value) else (field_type or "")
 
 
-__all__ = ["is_field_value_valid", "field_value_error"]
+def is_valid_country_code(code: Optional[str]) -> bool:
+    """True if ``code`` is an assigned ISO 3166-1 alpha-2 country code (#303)."""
+    return code in _COUNTRY_CODE_SET
+
+
+def dial_code_for(code: Optional[str]) -> Optional[str]:
+    """The ITU E.164 dial code (digits only, no ``+``) for a country code, or ``None`` (#303)."""
+    return DIAL_CODES.get(code or "")
+
+
+__all__ = [
+    "is_field_value_valid",
+    "field_value_error",
+    "is_valid_country_code",
+    "dial_code_for",
+]

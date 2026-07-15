@@ -31,7 +31,12 @@ from .errors import (
     ValidationError,
     WebhookError,
 )
-from .field_validation import field_value_error, is_field_value_valid
+from .field_validation import (
+    dial_code_for,
+    field_value_error,
+    is_field_value_valid,
+    is_valid_country_code,
+)
 from .http import HttpClient
 from .flow_condition import (
     compute_constants,
@@ -67,9 +72,11 @@ __all__ = [
     "WebhookError",
     "RateLimitError",
     "ValidationError",
-    # field-type value validation (#302)
+    # field-type value validation (#302) + country helpers (#303)
     "is_field_value_valid",
     "field_value_error",
+    "is_valid_country_code",
+    "dial_code_for",
     # transport
     "HttpClient",
     # output model
