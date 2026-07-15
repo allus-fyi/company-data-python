@@ -778,3 +778,19 @@ rows it returns, the pump persists each batch to the durable file buffer
 (ciphertext at rest) before delivery, acks per-item after your handler succeeds,
 and replays the buffer on restart — see [The changes pump](#the-changes-pump).
 ```
+
+## Sign in with allme (OAuth, #195)
+
+Relying-party helper for the "Sign in with allme" identity flow. Config-only keys (the idw role):
+
+```python
+from allus_company_data import OAuthClient, Claim
+
+oauth = OAuthClient.from_config("idw-config.json")  # {api_url, oauth_client_id, oauth_redirect_uri, oauth_client_secret?, oauth_private_key?, oauth_key_passphrase?}
+url = oauth.authorize_url("signin", state="xyz", code_challenge=challenge)   # the button target
+# ...user approves; your redirect_uri receives ?code=...
+info = oauth.complete_sign_in(code, code_verifier=verifier)  # {user, mode, values(plaintext)}
+```
+
+Modes: `signin` (identity), `one_time` (frozen claim values, decrypted for you), `connect` (a lasting connection).
+`authorize_url(mode, claims=[Claim("email", suggest="email_personal")])` for one_time; `poll_result(state)` for the detached response mode.

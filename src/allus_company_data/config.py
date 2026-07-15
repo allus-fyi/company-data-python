@@ -37,6 +37,13 @@ _ENV_MAP = {
     "customer_client_secret": "ALLUS_CUSTOMER_CLIENT_SECRET",
     "account_private_key": "ALLUS_ACCOUNT_PRIVATE_KEY",
     "account_passphrase": "ALLUS_ACCOUNT_PASSPHRASE",
+    # "Sign in with allme" idw role (#195): the idw_* app the RP embeds. oauth_private_key +
+    # oauth_key_passphrase are only needed to DECRYPT one_time claim values (config-only keys).
+    "oauth_client_id": "ALLUS_OAUTH_CLIENT_ID",
+    "oauth_redirect_uri": "ALLUS_OAUTH_REDIRECT_URI",
+    "oauth_client_secret": "ALLUS_OAUTH_CLIENT_SECRET",
+    "oauth_private_key": "ALLUS_OAUTH_PRIVATE_KEY",
+    "oauth_key_passphrase": "ALLUS_OAUTH_KEY_PASSPHRASE",
     "cache_dir": "ALLUS_CACHE_DIR",
     "format": "ALLUS_FORMAT",
 }
@@ -63,6 +70,15 @@ _REQUIRED_CUSTOMER = (
     "account_private_key",
 )
 
+# "Sign in with allme" idw role (#195): only the client id + redirect are required. A secret is
+# needed for confidential apps; the private key + passphrase are needed only to decrypt one_time
+# claim values (checked lazily by OAuthClient.complete_sign_in, not here).
+_REQUIRED_IDW = (
+    "api_url",
+    "oauth_client_id",
+    "oauth_redirect_uri",
+)
+
 _VALID_FORMATS = ("json", "xml")
 
 
@@ -85,6 +101,15 @@ class Config:
     # OPTIONAL — only needed if you receive encrypt_payload webhooks.
     account_private_key: Optional[str] = None
     account_passphrase: Optional[str] = None
+
+    # "Sign in with allme" idw role (#195). The idw_* app the RP embeds. oauth_private_key is the
+    # path to the app's OpenSSL-encrypted PKCS#8 PEM; oauth_key_passphrase decrypts it in memory —
+    # both only needed to read one_time claim values (config-only key handling, as everywhere).
+    oauth_client_id: Optional[str] = None
+    oauth_redirect_uri: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
+    oauth_private_key: Optional[str] = None
+    oauth_key_passphrase: Optional[str] = None
 
     # OPTIONAL — per-webhook HMAC secrets keyed by webhook id; matched via the
     # X-Allus-Webhook-Id header. A single-webhook service can use the flat
@@ -142,6 +167,17 @@ class Config:
     def from_customer_env(cls) -> "Config":
         """Build a CUSTOMER-role config entirely from ``ALLUS_*`` env vars."""
         return cls._build({}, role="customer")
+
+    @classmethod
+    def from_idw_file(cls, path: str) -> "Config":
+        """Load an IDW-role config (#195, "Sign in with allme") from a JSON file — requires the
+        oauth_client_id + oauth_redirect_uri; env vars override file values."""
+        return cls._build(cls._load_json(path), role="idw")
+
+    @classmethod
+    def from_idw_env(cls) -> "Config":
+        """Build an IDW-role config entirely from ``ALLUS_*`` env vars."""
+        return cls._build({}, role="idw")
 
     @classmethod
     def _build(cls, data: dict, role: str = "service") -> "Config":
@@ -219,7 +255,12 @@ class Config:
             )
 
         # Required fields (fail fast) — role-dependent.
-        required = _REQUIRED_CUSTOMER if role == "customer" else _REQUIRED
+        if role == "idw":
+            required = _REQUIRED_IDW
+        elif role == "customer":
+            required = _REQUIRED_CUSTOMER
+        else:
+            required = _REQUIRED
         missing = [name for name in required if not values.get(name)]
         if missing:
             raise ConfigError(
