@@ -31,7 +31,8 @@ from . import webhooks as _webhooks
 from .config import Config
 from .crypto import decrypt as crypto_decrypt, encrypt_for_public_key, load_public_key
 from .customer_models import CustomerConnection
-from .errors import ConfigError
+from .errors import ConfigError, ValidationError
+from .field_validation import is_field_value_valid
 from .http import HttpClient
 from .models import Change, Document, FlowRun
 from .pump import Pump
@@ -74,6 +75,9 @@ class CustomerClient:
         self._account_key = _webhooks.load_account_key(config)
         self._pubkey_cache: dict[str, Any] = {}
         self._service_key_cache: dict[str, Any] = {}
+        # requestTypeCache: "companyCode/serviceCode" → {request_field_id: field_type},
+        # resolved from the connect-screen lookup for typed-answer validation (#302).
+        self._request_type_cache: dict[str, dict[str, str]] = {}
         self._pump: Optional[Pump] = None
 
     # ── constructors (config-only keys) ─────────────────────────────────────────
@@ -118,7 +122,8 @@ class CustomerClient:
 
         Each ``answers`` entry is ``{request_field_id, value, kind?}``; ``value`` is
         the plaintext the customer types — it is encrypted here to the target
-        SERVICE public key before sending.
+        SERVICE public key before sending. Each value is validated against its request
+        row's field type (resolved from the connect-screen lookup, cached) first.
         """
         decisions = self._encrypt_typed(answers, company_code, service_code)
         return self._http.post(
@@ -280,16 +285,49 @@ class CustomerClient:
             raise ConfigError("account_private_key is required to decrypt this value")
         return crypto_decrypt(wrapper, self._account_key)
 
+    def _request_field_types(self, company_code: str, service_code: str) -> dict[str, str]:
+        """Resolve ``{request_field_id: field_type}`` for a service from the connect-screen
+        lookup, cached per company/service. Best-effort — a lookup failure yields an empty
+        map so typed-answer validation is simply skipped (#302)."""
+        key = f"{company_code}/{service_code}"
+        cached = self._request_type_cache.get(key)
+        if cached is not None:
+            return cached
+        out: dict[str, str] = {}
+        try:
+            body = self._http.get(f"{_CONN}/lookup/{company_code}/{service_code}")
+            rows = body.get("request_fields") if isinstance(body, dict) else None
+            for r in rows or []:
+                if not isinstance(r, dict):
+                    continue
+                rid = r.get("id")
+                ftype = r.get("field_type") or r.get("type")
+                if rid and ftype:
+                    out[str(rid)] = str(ftype)
+        except Exception:  # noqa: BLE001 — best-effort; a failed lookup skips validation
+            out = {}
+        self._request_type_cache[key] = out
+        return out
+
     def _encrypt_typed(self, answers: List[dict], company_code: str, service_code: str) -> List[dict]:
         pub = self._service_key(company_code, service_code)
         if pub is None:
             raise ConfigError(f"no service key for {company_code}/{service_code}")
+        # #302: validate each typed answer against its request row's field type BEFORE
+        # encryption. The type is resolved server-side from the connect-screen lookup
+        # (cached per service); an answer whose type can't be resolved is skipped —
+        # never invent one.
+        types = self._request_field_types(company_code, service_code)
         out: List[dict] = []
         for a in answers:
+            plain = str(a["value"])
+            ftype = types.get(str(a["request_field_id"]))
+            if ftype and not is_field_value_valid(ftype, plain):
+                raise ValidationError(a.get("request_field_id"), ftype)
             entry = {
                 "request_field_id": a["request_field_id"],
                 "kind": a.get("kind", "typed"),
-                "value": encrypt_for_public_key(str(a["value"]), pub),
+                "value": encrypt_for_public_key(plain, pub),
             }
             out.append(entry)
         return out

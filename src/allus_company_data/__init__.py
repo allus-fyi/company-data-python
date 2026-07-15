@@ -28,8 +28,10 @@ from .errors import (
     ConfigError,
     DecryptError,
     RateLimitError,
+    ValidationError,
     WebhookError,
 )
+from .field_validation import field_value_error, is_field_value_valid
 from .http import HttpClient
 from .flow_condition import (
     compute_constants,
@@ -64,6 +66,10 @@ __all__ = [
     "DecryptError",
     "WebhookError",
     "RateLimitError",
+    "ValidationError",
+    # field-type value validation (#302)
+    "is_field_value_valid",
+    "field_value_error",
     # transport
     "HttpClient",
     # output model
@@ -93,4 +99,4 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("allus-company-data")
 except Exception:  # running from source, not installed
-    __version__ = "0.0.12"  # keep in sync with pyproject
+    __version__ = "0.0.13"  # keep in sync with pyproject

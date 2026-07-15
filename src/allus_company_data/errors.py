@@ -75,6 +75,20 @@ class WebhookError(Exception):
     """Signature verification failed, or a webhook envelope couldn't be unwrapped."""
 
 
+class ValidationError(Exception):
+    """A submitted value failed field-type validation (#302) before encryption.
+
+    Carries the offending field ``slug`` and its ``field_type`` so the caller can
+    point at the bad answer without shipping malformed ciphertext.
+    """
+
+    def __init__(self, slug: Optional[str], field_type: Optional[str]) -> None:
+        self.slug = slug
+        self.field_type = field_type
+        target = slug if slug is not None else "value"
+        super().__init__(f"invalid {field_type} value for '{target}'")
+
+
 class RateLimitError(ApiError):
     """A 429 from a rate-limited endpoint.
 
@@ -100,4 +114,5 @@ __all__ = [
     "DecryptError",
     "WebhookError",
     "RateLimitError",
+    "ValidationError",
 ]

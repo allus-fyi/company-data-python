@@ -54,7 +54,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from .config import Config
 from .crypto import decrypt as crypto_decrypt
 from .crypto import encrypt_for_public_key, load_private_key, load_public_key
-from .errors import ApiError, ConfigError, DecryptError, RateLimitError
+from .errors import ApiError, ConfigError, DecryptError, RateLimitError, ValidationError
+from .field_validation import is_field_value_valid
 from .flow_condition import evaluate as evaluate_condition
 from .http import HttpClient
 from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField
@@ -680,6 +681,12 @@ class Client:
         answers_out = []
         for slug, val in fill.items():
             plain = val if isinstance(val, str) else json.dumps(val)
+            # #302: validate the plaintext against the field's declared type (resolved
+            # from the pinned flow definition) before it is encrypted. A slug with no
+            # field element in the graph resolves to None → skipped (do not invent a type).
+            ftype = _flow_field_type(run.definition, slug)
+            if ftype is not None and not is_field_value_valid(ftype, plain):
+                raise ValidationError(slug, ftype)
             values = []
             for uid in run.bindings.values():
                 if uid == run.service_user_id:
@@ -787,6 +794,23 @@ def _compute_next(definition: dict, from_key: Optional[str], answers: dict) -> d
 def _party_of(definition: dict, node_key: Optional[str]) -> Optional[str]:
     node = _node_by_key(definition, node_key)
     return node.get("party") if node else None
+
+
+def _flow_field_type(definition: dict, slug: str) -> Optional[str]:
+    """Resolve a fill slug to its ``field_type`` from the pinned flow graph.
+
+    Scans every node's ``elements`` for a ``kind='field'`` element with a matching
+    ``slug``. Returns ``None`` when the slug has no field element (skip validation —
+    never invent a type).
+    """
+    for n in definition.get("nodes", []):
+        if not isinstance(n, dict):
+            continue
+        for el in n.get("elements", []) or []:
+            if isinstance(el, dict) and el.get("kind") == "field" and el.get("slug") == slug:
+                ft = el.get("field_type")
+                return str(ft) if ft is not None else None
+    return None
 
 
 def _load_service_key(config: Config):
