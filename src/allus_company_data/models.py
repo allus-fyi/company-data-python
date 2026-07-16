@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
 
-from .crypto import BinaryHandle, DecryptError
+from .crypto import BinaryHandle, DecryptError, hash_matches
 
 # Field types whose decrypted plaintext is a JSON object → a parsed dict.
 STRUCTURED_TYPES = ("address", "bank", "creditcard")
@@ -125,6 +125,17 @@ class RequestField:
 # ── values ───────────────────────────────────────────────────────────────────
 
 
+def _verified_from(obj: dict, plaintext) -> bool:
+    """#311: recompute the verified flag from the just-decrypted plaintext (email str only)."""
+    if not isinstance(plaintext, str):
+        return False
+    vhash = obj.get("verified_hash")
+    vsalt = obj.get("verified_salt")
+    if not vhash or not vsalt:
+        return False
+    return hash_matches(vsalt, vhash, plaintext)
+
+
 @dataclass
 class Value:
     """A single answer for one of YOUR request slots.
@@ -138,6 +149,7 @@ class Value:
     value: Any
     live: bool
     updated_at: Optional[datetime] = None
+    verified: bool = False  # #311: True iff the value carries verified metadata AND the hash matches
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -160,7 +172,7 @@ class Value:
             decrypt_value=decrypt_value,
             binary_fetch=binary_fetch,
         )
-        return cls(value=typed, live=live, updated_at=updated_at, raw=obj)
+        return cls(value=typed, live=live, updated_at=updated_at, verified=_verified_from(obj, typed), raw=obj)
 
 
 def _typed_value(
@@ -324,6 +336,7 @@ class Change:
     signed_at: Optional[str] = None    # set on a signature: ISO timestamp the signature was recorded
     cancel_effective_date: Optional[str] = None  # set on a cancelled document_status_changed: ISO date the cancellation takes effect
     request_id: Optional[str] = None   # set on connection_request_accepted | connection_request_rejected
+    verified: bool = False  # #311: True iff a field_updated value is verified (hash matches the decrypted plaintext)
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -373,6 +386,7 @@ class Change:
             request_id=obj.get("request_id")
             if event in ("connection_request_accepted", "connection_request_rejected")
             else None,
+            verified=_verified_from(obj, value),
             at=_parse_iso_dt(obj.get("at")),
             raw=obj,
         )

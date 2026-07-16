@@ -24,6 +24,7 @@ passphrase.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import secrets
@@ -340,3 +341,20 @@ class BinaryHandle:
                 pass
             raise
         return len(data)
+
+
+def hash_matches(salt: str, expected_hash: str, plaintext: str) -> bool:
+    """#311 verified fields: True iff sha256(salt ‖ plaintext) == expected_hash (hex).
+
+    Consumers recompute this from the plaintext they just decrypted and trust the
+    verified flag ONLY on a match — a substituted/drifted value renders unverified.
+    """
+    if not salt or not expected_hash:
+        return False
+    computed = hashlib.sha256((salt + plaintext).encode("utf-8")).hexdigest()
+    return hmac_compare(computed, expected_hash)
+
+
+def hmac_compare(a: str, b: str) -> bool:
+    import hmac as _hmac
+    return _hmac.compare_digest(a, b)
