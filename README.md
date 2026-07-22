@@ -303,6 +303,31 @@ n = client.retry_dead_letters(handle)     # after you've fixed the bug
 print(f"re-drove {n} dead letters")
 ```
 
+### Key rotation — `key_rotated` and the public-key cache
+
+Every client caches the RSA public keys it fetches: a person's key is immutable — until they
+**rotate** it. A person learns of a rotation from a silent push; your service gets no pushes, so the
+`key_rotated` change is your **only** signal. Without it a long-running worker keeps encrypting to
+the rotated-away key for its whole lifetime, and the person can never read those values.
+
+**On the pump this is automatic** — the cached key is dropped as the change passes through, before
+your handler sees it. **Over a webhook it is not:** the signature verifier is static and has no
+client instance, so it cannot reach the cache. Call the invalidator yourself — noting that the two
+clients key their caches **differently**: the service client by `share_code`, the customer client by
+the person's **user id**. Passing a share code to the customer client removes nothing and leaves you
+encrypting to the old key. Both identifiers ride every change, alongside `public_key_sha256` — the
+fingerprint of the person's new key.
+
+```python
+if change.event == "key_rotated":
+    client.invalidate_public_key(change.share_code)      # service Client — keyed by SHARE CODE
+    customer.invalidate_public_key(change.person_id)     # CustomerClient — keyed by PERSON USER ID
+    # change.public_key_sha256 = fingerprint of the NEW key, if you want to verify the refetch
+```
+
+This is **eventual, not fail-closed** — nothing rejects a document encrypted to a stale key, so a
+window remains between the rotation and your next drain. Drain often if that window matters.
+
 ### Webhook helpers (on the client)
 
 The webhook receiver helpers are also exposed as `Client` methods (they delegate

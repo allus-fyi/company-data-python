@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 import logging
 import time
 from typing import Any, Callable, List, Optional
@@ -74,6 +75,23 @@ class CustomerClient:
         # ACCOUNT private key — decrypts received documents/flow copies. Loaded once.
         self._account_key = _webhooks.load_account_key(config)
         self._pubkey_cache: dict[str, Any] = {}
+        # #344 review pass 1 (after the budget reset): a per-key GENERATION counter plus a real
+        # LOCK, bumped/held by every invalidation.
+        #
+        # The fetch path is check -> HTTP -> store, and ``invalidate_public_key`` -- which the
+        # README tells webhook consumers to call from their own handler -- may run in that window
+        # from another thread. Its pop would then be silently undone by the store that follows, the
+        # ``key_rotated`` event has already been consumed, and with no TTL the process encrypts to
+        # the dead key for the rest of its life.
+        #
+        # The lock is NOT optional and the GIL is not a substitute: the invariant spans multiple
+        # bytecodes (compare the generation, then assign), so a thread can pass the comparison, be
+        # switched out, let another thread delete + increment, then resume and write the
+        # pre-rotation key back. Individual dict ops being atomic does not help. The lock therefore
+        # covers invalidation's delete+increment, and the fetch's check/snapshot and its
+        # compare-and-store -- but is never held across the HTTP call.
+        self._pubkey_gen: dict[str, int] = {}
+        self._pubkey_lock = threading.Lock()
         self._service_key_cache: dict[str, Any] = {}
         # requestTypeCache: "companyCode/serviceCode" → {request_field_id: field_type},
         # resolved from the connect-screen lookup for typed-answer validation (#302).
@@ -242,9 +260,29 @@ class CustomerClient:
         items = body.get("changes", []) if isinstance(body, dict) else (body or [])
         return [o for o in items if isinstance(o, dict)]
 
+    def invalidate_public_key(self, user_id: str) -> None:
+        """Drop a person's cached RSA public key, by user id (#344).
+
+        See :meth:`Client.invalidate_public_key`; the changes feed calls this for you, webhook
+        consumers must call it themselves.
+        """
+        with self._pubkey_lock:
+            self._pubkey_cache.pop(user_id, None)
+            # Any fetch already in flight must not write its stale result back.
+            self._pubkey_gen[user_id] = self._pubkey_gen.get(user_id, 0) + 1
+
     def _decrypt_change(self, event: dict) -> Change:
         # Customer events are self-describing (about a company/service); there is
         # no person slug catalog, and any encrypted value is account-key material.
+        #
+        # #344: this cache also stores a negative (None) result, so without invalidation a person
+        # who had not generated keys yet would stay unresolvable for the process lifetime too.
+        # #344: the pull feed names it `event`; a raw webhook body names it `action` (and on
+        # document rows `action` carries signed|accepted|cancelled instead) - so match either key.
+        if "key_rotated" in (event.get("event"), event.get("action")):
+            person_id = event.get("person_user_id") or event.get("person_id")
+            if isinstance(person_id, str) and person_id:
+                self.invalidate_public_key(person_id)
         return Change.from_api(
             event, type_for_slug=lambda slug: None, decrypt_value=self._decrypt_account
         )
@@ -341,9 +379,19 @@ class CustomerClient:
         return self._service_key_cache[key]
 
     def _batch_key(self, user_id: str):
-        if user_id not in self._pubkey_cache:
-            body = self._http.post(f"{_KEYS}/batch", json_body={"user_ids": [user_id]})
-            keys = body.get("keys") if isinstance(body, dict) else None
-            spki = keys.get(user_id) if isinstance(keys, dict) else None
-            self._pubkey_cache[user_id] = load_public_key(spki) if spki else None
-        return self._pubkey_cache[user_id]
+        # ``in``, not a None check: a None value is a CACHED NEGATIVE (person has no key yet) and
+        # must still count as a hit.
+        with self._pubkey_lock:
+            if user_id in self._pubkey_cache:
+                return self._pubkey_cache[user_id]
+            gen = self._pubkey_gen.get(user_id, 0)
+        body = self._http.post(f"{_KEYS}/batch", json_body={"user_ids": [user_id]})
+        keys = body.get("keys") if isinstance(body, dict) else None
+        spki = keys.get(user_id) if isinstance(keys, dict) else None
+        loaded = load_public_key(spki) if spki else None
+        # Store ONLY if no invalidation happened while the request was in flight. The compare and
+        # the assignment must be one critical section — see the note on the lock above.
+        with self._pubkey_lock:
+            if self._pubkey_gen.get(user_id, 0) == gen:
+                self._pubkey_cache[user_id] = loaded
+        return loaded

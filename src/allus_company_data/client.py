@@ -45,6 +45,7 @@ import base64
 import json
 import logging
 import secrets
+import threading
 import time
 from typing import Any, Callable, Iterator, List, Optional
 
@@ -124,6 +125,23 @@ class Client:
         # Recipient RSA public keys (by share_code) — cached for per-person document
         # encryption. A public key is immutable + not a secret (fetched live, never configured).
         self._pubkey_cache: dict[str, Any] = {}
+        # #344 review pass 1 (after the budget reset): a per-key GENERATION counter plus a real
+        # LOCK, bumped/held by every invalidation.
+        #
+        # The fetch path is check -> HTTP -> store, and ``invalidate_public_key`` -- which the
+        # README tells webhook consumers to call from their own handler -- may run in that window
+        # from another thread. Its pop would then be silently undone by the store that follows, the
+        # ``key_rotated`` event has already been consumed, and with no TTL the process encrypts to
+        # the dead key for the rest of its life.
+        #
+        # The lock is NOT optional and the GIL is not a substitute: the invariant spans multiple
+        # bytecodes (compare the generation, then assign), so a thread can pass the comparison, be
+        # switched out, let another thread delete + increment, then resume and write the
+        # pre-rotation key back. Individual dict ops being atomic does not help. The lock therefore
+        # covers invalidation's delete+increment, and the fetch's check/snapshot and its
+        # compare-and-store -- but is never held across the HTTP call.
+        self._pubkey_gen: dict[str, int] = {}
+        self._pubkey_lock = threading.Lock()
 
     # ── constructors (config-only keys) ────────────────────────────────────────
 
@@ -305,8 +323,34 @@ class Client:
         items = body.get("changes", []) if isinstance(body, dict) else (body or [])
         return [o for o in items if isinstance(o, dict)]
 
+    def invalidate_public_key(self, share_code: str) -> None:
+        """Drop a person's cached RSA public key, by share code (#344).
+
+        A public key is immutable, so caching one is safe until the person rotates it. Persons
+        learn about a rotation from a silent push; a SERVICE receives no pushes at all, so without
+        a signal a long-lived worker could keep encrypting documents to the rotated-away key for
+        the whole process lifetime, with no recovery.
+
+        The changes feed calls this for you. Call it yourself when consuming changes over a
+        **webhook** — the verifier is a standalone function with no client instance, so it cannot
+        reach this cache: on a ``key_rotated`` webhook call
+        ``client.invalidate_public_key(change.share_code)``.
+        """
+        with self._pubkey_lock:
+            self._pubkey_cache.pop(share_code, None)
+            # Any fetch already in flight must not write its stale result back.
+            self._pubkey_gen[share_code] = self._pubkey_gen.get(share_code, 0) + 1
+
     def _decrypt_change(self, event: dict) -> Change:
         """The pump's decrypt: a raw event dict → a typed :class:`Change` (value at delivery)."""
+        # #344: the feed is a service's only rotation signal. Deliberately eventual — nothing
+        # rejects a document encrypted to a stale key, so a window remains until this is drained.
+        # #344: the pull feed names it `event`; a raw webhook body names it `action` (and on
+        # document rows `action` carries signed|accepted|cancelled instead) - so match either key.
+        if "key_rotated" in (event.get("event"), event.get("action")):
+            share_code = event.get("share_code")
+            if isinstance(share_code, str) and share_code:
+                self.invalidate_public_key(share_code)
         return Change.from_api(
             event,
             type_for_slug=self._type_for_slug,
@@ -376,7 +420,9 @@ class Client:
 
     def _recipient_public_key(self, share_code: str):
         """Fetch + cache the recipient RSA public key by share_code (GET /api/keys/{shareCode})."""
-        cached = self._pubkey_cache.get(share_code)
+        with self._pubkey_lock:
+            cached = self._pubkey_cache.get(share_code)
+            gen = self._pubkey_gen.get(share_code, 0)
         if cached is not None:
             return cached
         body = self._http.get(f"{_KEYS}/{share_code}")
@@ -384,7 +430,11 @@ class Client:
         if not spki:
             raise ApiError(0, "keys.not_found", f"no public_key for share_code {share_code}")
         key = load_public_key(spki)
-        self._pubkey_cache[share_code] = key
+        # Store ONLY if no invalidation happened while the request was in flight. The compare and
+        # the assignment must be one critical section — see the note on the lock above.
+        with self._pubkey_lock:
+            if self._pubkey_gen.get(share_code, 0) == gen:
+                self._pubkey_cache[share_code] = key
         return key
 
     def _resolve_share_code(

@@ -336,6 +336,7 @@ class Change:
     signed_at: Optional[str] = None    # set on a signature: ISO timestamp the signature was recorded
     cancel_effective_date: Optional[str] = None  # set on a cancelled document_status_changed: ISO date the cancellation takes effect
     request_id: Optional[str] = None   # set on connection_request_accepted | connection_request_rejected
+    public_key_sha256: Optional[str] = None  # #344: set on key_rotated — SHA-256 fingerprint of the person's NEW public key
     verified: bool = False  # #311: True iff a field_updated value is verified (hash matches the decrypted plaintext)
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
@@ -386,6 +387,7 @@ class Change:
             request_id=obj.get("request_id")
             if event in ("connection_request_accepted", "connection_request_rejected")
             else None,
+            public_key_sha256=obj.get("public_key_sha256") if event == "key_rotated" else None,
             verified=_verified_from(obj, value),
             at=_parse_iso_dt(obj.get("at")),
             raw=obj,
