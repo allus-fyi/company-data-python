@@ -93,6 +93,12 @@ class CustomerClient:
         self._pubkey_gen: dict[str, int] = {}
         self._pubkey_lock = threading.Lock()
         self._service_key_cache: dict[str, Any] = {}
+        # #411: the SERVICE key cache now has an invalidator too (``invalidate_service_key``,
+        # driven by the ``service_key_rotated`` change), so it needs the same generation counter
+        # and lock, for exactly the reason spelled out above — a separate lock so a person-key
+        # fetch and a service-key fetch never serialise on each other.
+        self._service_key_gen: dict[str, int] = {}
+        self._service_key_lock = threading.Lock()
         # requestTypeCache: "companyCode/serviceCode" → {request_field_id: field_type},
         # resolved from the connect-screen lookup for typed-answer validation (#302).
         self._request_type_cache: dict[str, dict[str, str]] = {}
@@ -271,6 +277,20 @@ class CustomerClient:
             # Any fetch already in flight must not write its stale result back.
             self._pubkey_gen[user_id] = self._pubkey_gen.get(user_id, 0) + 1
 
+    def invalidate_service_key(self, company_code: str, service_code: str) -> None:
+        """Drop a SERVICE's cached RSA public key (#411).
+
+        The mirror of :meth:`invalidate_public_key` in the service→customer direction: the next
+        answer or document encrypted to that service refetches its key. The changes feed calls this
+        for you on a ``service_key_rotated`` event; webhook consumers must call it themselves with
+        the body's ``company_share_code`` and ``service_share_code``.
+        """
+        key = f"{company_code}/{service_code}"
+        with self._service_key_lock:
+            self._service_key_cache.pop(key, None)
+            # Any fetch already in flight must not write its stale result back.
+            self._service_key_gen[key] = self._service_key_gen.get(key, 0) + 1
+
     def _decrypt_change(self, event: dict) -> Change:
         # Customer events are self-describing (about a company/service); there is
         # no person slug catalog, and any encrypted value is account-key material.
@@ -283,6 +303,18 @@ class CustomerClient:
             person_id = event.get("person_user_id") or event.get("person_id")
             if isinstance(person_id, str) and person_id:
                 self.invalidate_public_key(person_id)
+        # #411: a service this customer connects to replaced its keypair — drop the cached copy so
+        # the next encryption refetches. Same either-key match as above.
+        if "service_key_rotated" in (event.get("event"), event.get("action")):
+            company_code = event.get("company_share_code")
+            service_code = event.get("service_share_code")
+            if (
+                isinstance(company_code, str)
+                and company_code
+                and isinstance(service_code, str)
+                and service_code
+            ):
+                self.invalidate_service_key(company_code, service_code)
         return Change.from_api(
             event, type_for_slug=lambda slug: None, decrypt_value=self._decrypt_account
         )
@@ -372,11 +404,20 @@ class CustomerClient:
 
     def _service_key(self, company_code: str, service_code: str):
         key = f"{company_code}/{service_code}"
-        if key not in self._service_key_cache:
-            body = self._http.get(f"{_KEYS}/{company_code}/{service_code}")
-            spki = body.get("public_key") if isinstance(body, dict) else None
-            self._service_key_cache[key] = load_public_key(spki) if spki else None
-        return self._service_key_cache[key]
+        # ``in``, not a None check: a None value is a CACHED NEGATIVE and must still count as a hit.
+        with self._service_key_lock:
+            if key in self._service_key_cache:
+                return self._service_key_cache[key]
+            gen = self._service_key_gen.get(key, 0)
+        body = self._http.get(f"{_KEYS}/{company_code}/{service_code}")
+        spki = body.get("public_key") if isinstance(body, dict) else None
+        loaded = load_public_key(spki) if spki else None
+        # #411: store ONLY if no invalidation happened while the request was in flight. The compare
+        # and the assignment must be one critical section — see the note on the lock above.
+        with self._service_key_lock:
+            if self._service_key_gen.get(key, 0) == gen:
+                self._service_key_cache[key] = loaded
+        return loaded
 
     def _batch_key(self, user_id: str):
         # ``in``, not a None check: a None value is a CACHED NEGATIVE (person has no key yet) and

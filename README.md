@@ -328,6 +328,23 @@ if change.event == "key_rotated":
 This is **eventual, not fail-closed** — nothing rejects a document encrypted to a stale key, so a
 window remains between the rotation and your next drain. Drain often if that window matters.
 
+### `service_key_rotated` — the same thing, the other way round
+
+The customer client also caches the **service's** public key, the one you encrypt your consent
+answers and documents *to*, keyed `"companyCode/serviceCode"`. When that company replaces its
+service keypair, the `service_key_rotated` change on your account feed is your only signal — you
+receive no pushes. Same shape, same guarantees, same automatic handling on the pump:
+
+```python
+if change.event == "service_key_rotated":
+    # Automatic on the pump. Over a webhook, from the raw event body:
+    customer.invalidate_service_key(body["company_share_code"], body["service_share_code"])
+    # body["service_public_key_sha256"] = fingerprint of the service's NEW key
+```
+
+Also **eventual, not fail-closed**. Note the identifiers are **share codes**, not the ids used by
+`invalidate_public_key` — the two caches are keyed differently and the wrong call removes nothing.
+
 ### Webhook helpers (on the client)
 
 The webhook receiver helpers are also exposed as `Client` methods (they delegate
