@@ -819,7 +819,6 @@ and a `decrypt` closure (builds a typed `Change`). Because the fetch deletes the
 rows it returns, the pump persists each batch to the durable file buffer
 (ciphertext at rest) before delivery, acks per-item after your handler succeeds,
 and replays the buffer on restart — see [The changes pump](#the-changes-pump).
-```
 
 ## Sign in with allme (OAuth, #195)
 
