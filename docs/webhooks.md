@@ -56,10 +56,8 @@ def allus_webhook():
         change = client.handle_webhook(request.get_data(), dict(request.headers))
     except WebhookError:
         abort(401)
-    if not seen(change.id):          # idempotency — same rule as the pump
-        apply_change(change)
-        record_seen(change.id)
-    return ("", 204)
+    apply_change(change)             # see "Delivery contract" below before adding dedup
+    return ("", 200)   # 200 — the ONLY status allus counts as delivered
 ```
 
 ### FastAPI
@@ -78,10 +76,8 @@ async def allus_webhook(request: Request):
         change = client.handle_webhook(raw, dict(request.headers))
     except WebhookError:
         raise HTTPException(status_code=401)
-    if not seen(change.id):
-        apply_change(change)
-        record_seen(change.id)
-    return Response(status_code=204)
+    apply_change(change)
+    return Response(status_code=200)
 ```
 
 Split the steps if you prefer:
@@ -91,6 +87,40 @@ if not client.verify_webhook(raw_body, headers):
     abort(401)
 change = client.parse_webhook(raw_body, headers)
 ```
+
+## Delivery contract — effectively unique, rarely replayed
+
+Each queued event is POSTed **once**, and **only HTTP `200` counts as delivered** — a
+`202`, a `204`, a 3xx redirect and every 4xx/5xx are all treated as a failure. On anything
+other than `200` (or a timeout or connection error) the event is **not retried in place**:
+it and the rest of the webhook's queue move to a durable server-side backlog and the
+webhook is marked bad. The backlog is delivered later, either automatically when
+the webhook next probes healthy, or when you drain it yourself with
+`GET /api/company-data/changes?webhook_id=…` (delete-on-read).
+
+So deliveries are **effectively unique** — with one rare exception. If your endpoint
+processed an event but the platform never saw your `200` (your response timed out, or
+you crashed after committing but before responding), the event is treated as failed
+and replayed on recovery, so you receive it **again**. Nothing caps that at two: a
+failed probe leaves its backlog row in place, so every later recovery attempt whose
+`200` is likewise lost replays the same event once more. Inside that window the
+contract is **at-least-once** — plan for one or more repeats, not for exactly one.
+
+> **Do not use `change.id` as an idempotency key here.** On the webhook path the id is
+> neither reliably stable nor reliably fresh, and a receiver cannot tell which one it is
+> holding. A **live** delivery is built with no change row behind it, so its id is minted
+> for that single POST — the later replay of the same event is rebuilt from a durable
+> backlog row and therefore carries a **different** id. But a replayed delivery carries
+> **that row's** id, and the row stays in place until it is delivered successfully, so a
+> re-attempted replay arrives with the **same** id — which changes again if the event is
+> re-backlogged after a further failure. An id check therefore misses the duplicate you
+> are most likely to see and matches only a rarer one; it is not a contract. If you need
+> strict idempotency, key on the **content** — event + person + slug/document + payload —
+> never on the id.
+
+**Webhooks and the pull feed are alternative integrations — consume one, never both.**
+The id-dedup guidance in [pump.md](pump.md) applies to the pump only, where `Change.id`
+is the real server change-row id.
 
 ## Config-driven secrets
 
