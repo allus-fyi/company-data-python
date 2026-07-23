@@ -122,6 +122,9 @@ class Client:
         self._request_fields: Optional[List[RequestField]] = None
         self._type_by_slug: dict[str, Optional[str]] = {}
 
+        # #436 2FA-by-allme — the relying-party challenge API, lazily built.
+        self._two_factor: Optional["TwoFactorClient"] = None
+
         # Recipient RSA public keys (by share_code) — cached for per-person document
         # encryption. A public key is immutable + not a secret (fetched live, never configured).
         self._pubkey_cache: dict[str, Any] = {}
@@ -195,6 +198,15 @@ class Client:
             self._request_fields = fields
             self._type_by_slug = {f.slug: f.type for f in fields if f.slug is not None}
         return self._request_fields
+
+    @property
+    def two_factor(self) -> "TwoFactorClient":
+        """#436 2FA-by-allme — the relying-party challenge API (``two_factor.challenge`` / ``.result``)."""
+        if self._two_factor is None:
+            from .two_factor import TwoFactorClient
+
+            self._two_factor = TwoFactorClient(self._http)
+        return self._two_factor
 
     # ── connections (heavily rate-limited — initial sync / reconciliation) ─────
 

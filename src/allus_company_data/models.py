@@ -377,7 +377,11 @@ class Change:
             value=value,
             live=live,
             document_id=obj.get("document_id"),
-            status=obj.get("status") if event == "document_status_changed" else None,
+            # #436: 2fa_challenge_completed carries the outcome in `status` (approved|denied|revoked);
+            # its challenge_id/completed_at stay in `raw`. The poll is the record (spec §3).
+            status=obj.get("status")
+            if event in ("document_status_changed", "2fa_challenge_completed")
+            else None,
             action=obj.get("action") if event == "document_status_changed" else None,
             note=obj.get("note") if event == "document_status_changed" else None,
             method=obj.get("method") if event == "document_status_changed" else None,

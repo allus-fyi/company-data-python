@@ -47,6 +47,7 @@ from .flow_condition import (
 )
 from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField, Value
 from .oauth import Claim, OAuthClient
+from .two_factor import TwoFactorChallenge, TwoFactorClient, TwoFactorResult
 from .pump import Pump
 from .webhooks import handle_webhook, parse_webhook, verify_webhook
 
@@ -57,6 +58,10 @@ __all__ = [
     "CustomerClient",
     "CustomerConnection",
     "CustomerServiceLink",
+    # 2FA-by-allme (#436)
+    "TwoFactorClient",
+    "TwoFactorChallenge",
+    "TwoFactorResult",
     # config
     "Config",
     # crypto
