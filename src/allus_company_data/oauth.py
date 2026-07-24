@@ -35,7 +35,7 @@ DEFAULT_AUTHORIZE_URL = "https://web.allme.fyi/auth"
 # Binary field types can't be requested as claims (they can't be encrypted inline).
 _NON_CLAIMABLE = frozenset({"photo", "document", "legal_document"})
 _MAX_CLAIMS = 15
-_MODES = frozenset({"signin", "one_time", "connect"})
+_MODES = frozenset({"signin", "one_time", "connect", "2fa_enroll"})
 _RESPONSE_MODES = frozenset({"redirect", "detached"})
 
 
@@ -96,7 +96,7 @@ class OAuthClient:
     ) -> str:
         """Build the consent-screen URL — the "Sign in with allme" button target.
 
-        ``mode`` is one of ``signin`` | ``one_time`` | ``connect``. ``claims`` (one_time)
+        ``mode`` is one of ``signin`` | ``one_time`` | ``connect`` | ``2fa_enroll``. ``claims`` (one_time)
         are validated: binary/unknown types are dropped and at most 15 are sent. Pass a
         PKCE ``code_challenge`` for a public RP; ``state`` is echoed back for CSRF.
         """
@@ -216,11 +216,13 @@ class OAuthClient:
     # ── detached mode ───────────────────────────────────────────────────────
 
     def poll_result(self, state: str, *, timeout: float = 600, interval: float = 2) -> dict:
-        """Poll ``/oauth2/result`` for a detached sign-in (single-delivery).
+        """Poll ``/oauth2/result`` for a detached sign-in or enrollment (single-delivery).
 
-        Loops on HTTP 202 (pending) until the code arrives (200 → returns ``{code, state}``),
-        the result expires (410 → :class:`ApiError`), or ``timeout`` seconds elapse
-        (:class:`ApiError`).
+        Loops on HTTP 202 (pending) until the terminal body arrives — a detached sign-in
+        returns ``{code, state}``; a detached ``2fa_enroll`` returns ``{enrolled: true, state}``
+        (#481) — the result expires (410 → :class:`ApiError`), or ``timeout`` seconds elapse
+        (:class:`ApiError`). Returns on the first delivered shape (``code`` OR ``enrolled``) and
+        never polls past it, so a one-shot enrollment result is not consumed and lost.
         """
         data: Dict[str, str] = {"client_id": self._config.oauth_client_id or "", "state": state}
         if self._config.oauth_client_secret:
@@ -235,7 +237,11 @@ class OAuthClient:
             status = resp.status_code
             if status == 200:
                 body = self._json(resp)
-                if body.get("code"):
+                # #481: return on the first delivered terminal shape — a sign-in ``code`` OR a
+                # ``2fa_enroll`` ``enrolled`` sentinel ({enrolled: true, state}). Both are one-shot;
+                # returning here (rather than looping) is what keeps an enrollment result from being
+                # consumed and lost to a timeout.
+                if body.get("code") or body.get("enrolled"):
                     return body
             elif status == 410:
                 raise ApiError(410, "oauth.result_expired", "detached sign-in expired before completion")

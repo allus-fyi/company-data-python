@@ -8,10 +8,12 @@ record: the first read of a terminal state delivers it and burns it (a later rea
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import quote
 
+from .errors import ApiError
 from .http import HttpClient
 
 
@@ -58,8 +60,10 @@ class TwoFactorResult:
 class TwoFactorClient:
     """Reached via :attr:`Client.two_factor`."""
 
-    def __init__(self, http: HttpClient) -> None:
+    def __init__(self, http: HttpClient, *, sleep: Callable[[float], None] = time.sleep) -> None:
         self._http = http
+        # Injectable so wait_for_result is unit-testable without real delays (matches OAuthClient).
+        self._sleep = sleep
 
     def challenge(
         self, share_code: str, idempotency_key: str, context: Optional[str] = None
@@ -83,3 +87,25 @@ class TwoFactorClient:
         """Poll a challenge. While pending, ``status`` is ``pending``; the first terminal read burns it."""
         body = self._http.get(f"/api/service-2fa/challenges/{quote(challenge_id, safe='')}")
         return TwoFactorResult.from_api(body if isinstance(body, dict) else {})
+
+    def wait_for_result(
+        self, challenge_id: str, timeout: float = 600, interval: float = 2
+    ) -> TwoFactorResult:
+        """Poll :meth:`result` until the status is terminal (no longer ``pending``) and return that
+        first terminal :class:`TwoFactorResult`.
+
+        Convenience over a manual :meth:`result` loop (#481; mirrors the §12c ``poll_result``
+        precedent). Because the first terminal read burns the challenge, this returns as soon as the
+        status leaves ``pending`` — it never re-reads a consumed result. Raises :class:`ApiError` if
+        ``timeout`` seconds elapse while still pending; ``interval`` is the seconds between polls.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            res = self.result(challenge_id)
+            if res.status != "pending":
+                return res
+            if time.monotonic() >= deadline:
+                raise ApiError(
+                    0, None, f"2FA challenge {challenge_id} not completed within {timeout}s"
+                )
+            self._sleep(interval)

@@ -183,3 +183,31 @@ def test_poll_result_expired_raises():
     with pytest.raises(ApiError) as ei:
         c.poll_result("DET1", interval=0.01, timeout=5)
     assert ei.value.status == 410
+
+
+# ── #481: 2fa_enroll mode + detached enrollment poll delivery ──────────────
+
+def test_authorize_url_accepts_2fa_enroll_mode():
+    c = OAuthClient(_cfg())
+    _, q = _parse_url(c.authorize_url("2fa_enroll", response_mode="detached", state="EN1"))
+    assert q["mode"] == "2fa_enroll"
+    assert q["response_mode"] == "detached"
+
+
+def test_poll_result_pending_then_enrolled():
+    # #481: a detached 2fa_enroll delivers {enrolled: true, state}, NOT a code. poll_result must
+    # return on the `enrolled` sentinel — otherwise it consumes the one-shot result and times out.
+    s = FakeSession()
+    s.queue_post(FakeResp(202), FakeResp(200, {"enrolled": True, "state": "EN1"}))
+    c = OAuthClient(_cfg(), session=s, sleep=lambda _s: None)
+    res = c.poll_result("EN1", interval=0.01, timeout=5)
+    assert res["enrolled"] is True and res["state"] == "EN1"
+    assert len(s.posts) == 2  # returned on first delivery, never polled past it
+
+
+def test_poll_result_still_returns_on_code_after_enroll_change():
+    # Regression: the enroll addition must not break the sign-in `code` delivery.
+    s = FakeSession()
+    s.queue_post(FakeResp(200, {"code": "AUTHCODE", "state": "DET1"}))
+    c = OAuthClient(_cfg(), session=s, sleep=lambda _s: None)
+    assert c.poll_result("DET1", interval=0.01, timeout=5)["code"] == "AUTHCODE"

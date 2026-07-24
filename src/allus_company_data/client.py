@@ -205,7 +205,7 @@ class Client:
         if self._two_factor is None:
             from .two_factor import TwoFactorClient
 
-            self._two_factor = TwoFactorClient(self._http)
+            self._two_factor = TwoFactorClient(self._http, sleep=self._sleep)
         return self._two_factor
 
     # ── connections (heavily rate-limited — initial sync / reconciliation) ─────

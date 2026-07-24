@@ -235,6 +235,25 @@ def test_429_exhausts_retries_then_raises_rate_limit_error(tmp_path):
     assert len(s.gets) == 4
 
 
+def test_429_pending_cap_surfaces_immediately_without_retry(tmp_path):
+    # #481: a twofa.pending_cap 429 can never be cleared by a retry — it must surface at once
+    # as ApiError, NOT go through the Retry-After backoff (which every other 429 gets).
+    s = FakeSession()
+    s.post_responses = [_token_ok()]
+    s.get_responses = [
+        FakeResponse(429, headers={"Retry-After": "2"}, json_body={"error_key": "twofa.pending_cap"}),
+        FakeResponse(200, json_body={"should": "not be reached"}),
+    ]
+    sleeps = []
+    c = _make_client(tmp_path, s, sleeps=sleeps)
+    with pytest.raises(ApiError) as ei:
+        c.get("/api/service-2fa/challenges")
+    assert ei.value.status == 429
+    assert ei.value.error_key == "twofa.pending_cap"
+    assert sleeps == []          # no backoff sleep
+    assert len(s.gets) == 1      # no retry — the 200 was never consumed
+
+
 def test_429_default_backoff_when_no_retry_after(tmp_path):
     s = FakeSession()
     s.post_responses = [_token_ok()]

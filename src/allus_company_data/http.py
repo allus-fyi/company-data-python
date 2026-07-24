@@ -212,12 +212,17 @@ class HttpClient:
                 )
 
             if status == 429:
+                error_key, message = _extract_error(resp)
+                # #481: a pending-cap 429 means the caller already holds the maximum concurrent
+                # 2FA challenges — a retry can never clear that, so surface it immediately as an
+                # ApiError instead of the blind Retry-After backoff every other 429 gets.
+                if error_key == "twofa.pending_cap":
+                    raise ApiError(status, error_key, message)
                 retry_after = _parse_retry_after(resp)
                 if retries_429 < self._max_retries_429:
                     retries_429 += 1
                     self._sleep(_backoff_delay(retry_after, retries_429))
                     continue
-                error_key, message = _extract_error(resp)
                 raise RateLimitError(retry_after, error_key, message)
 
             # Any other non-2xx → ApiError with the body's error_key.
