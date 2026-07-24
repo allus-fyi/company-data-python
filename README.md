@@ -19,8 +19,9 @@ the request slots you configured.
 [Quickstart](#quickstart) · [Every call](#every-call) ·
 [The typed value model](#the-typed-value-model) ·
 [The changes pump](#the-changes-pump) · [Webhooks](#webhooks) ·
-[Company documents](#company-documents) · [Rate limits](#rate-limits) ·
-[Errors](#errors) · [How it's wired](#how-its-wired)
+[Company documents](#company-documents) ·
+[Contract-flow runs](#contract-flow-runs-company-side) ·
+[Rate limits](#rate-limits) · [Errors](#errors) · [How it's wired](#how-its-wired)
 
 Deeper reference pages live in [`docs/`](docs/):
 [config](docs/config.md) · [model](docs/model.md) · [pump](docs/pump.md) ·
@@ -714,6 +715,8 @@ with open("agreement.pdf", "rb") as fh:
 ```python
 list_documents(*, person_user_id=None, status=None, limit=100, offset=0) -> list[Document]
 document(document_id)                                                     -> Document
+document_file(document_id)                                                -> bytes    # #491: the file BYTES
+flow_run_document(run_id)                                                 -> bytes    # #491: the run's OWN (service-key) copy
 update_document_status(document_id, status)                              -> Document
 update_document_metadata(document_id, *, metadata=None, name=None,
                          description=None)                               -> Document
@@ -730,6 +733,21 @@ doc = client.document(contract.id)
 # For a json doc, .json() returns the plaintext object — a per-person doc is
 # decrypted with your service key on demand; a broadcast doc is already plaintext.
 print(doc.json())
+
+# #491: download a FILE document's bytes (metadata methods don't include them).
+# A BROADCAST document is served plaintext and is returned as-is. A PER-PERSON /
+# private document is encrypted to the RECIPIENT's key — the company cannot
+# decrypt that, so this raises ApiError('documents.recipient_encrypted') instead
+# of a doomed decrypt attempt.
+try:
+    pdf_bytes = client.document_file(contract.id)
+except ApiError as e:
+    if e.error_key == "documents.recipient_encrypted":
+        # This is a per-person document; only the recipient can read it. For a
+        # generated flow contract, download the company's OWN copy instead:
+        pdf_bytes = client.flow_run_document(run.id)
+    else:
+        raise
 
 # Move it through its lifecycle / edit its metadata.
 client.update_document_status(contract.id, "active")
@@ -760,6 +778,48 @@ def handle(change):
 
 client.process_changes(handle)
 ```
+
+---
+
+## Contract-flow runs (company side)
+
+The company is one bound **party** of a contract flow — a multi-step, per-party
+form the platform walks to gather (and end-to-end encrypt) answers, optionally
+finishing at a document-generating leaf. These calls cover the company's turn:
+
+```python
+trigger_flow_run(flow_id, *, connection_id, bindings)      -> FlowRun
+flow_runs(*, status="awaiting_company")                    -> list[FlowRun]
+flow_run(run_id)                                            -> FlowRun
+flow_run_answers(run)                                        -> dict[str, str]  # #491 gap 1
+submit_flow_answers(run, fill, *, party_pubkeys=None)       -> FlowRun
+generate_flow_document(run)                                  -> dict
+process_flow_run(run_id, fill_node, *, party_pubkeys=None)  -> FlowRun
+identity()                                                    -> dict           # #491 gap 3
+```
+
+* `trigger_flow_run(flow_id, connection_id=..., bindings={...})` starts a run bound to a connection and the flow's other parties, pinning the flow's latest **published** version.
+* `flow_runs(status=...)` / `flow_run(run_id)` list / fetch runs. `status=None` returns everything; the default `"awaiting_company"` is the actionable queue.
+* `flow_run_answers(run)` (#491 gap 1) — a run's **decrypted** answers as `{slug: plaintext}`, reading the company's service-key answer copies. Accepts a loaded `FlowRun` or a run id (fetched via `flow_run`).
+* `submit_flow_answers` / `generate_flow_document` / `process_flow_run` fill the company's current node, advance the run (encrypting one answer copy per bound party), and — at a document-mode leaf — generate the contract. See the method docstrings for the full per-party encryption details.
+* `identity()` (#491 gap 3) — this client's own `{"company_user_id": ..., "service_id": ...}` from `GET /api/company-data/whoami`. `trigger_flow_run`'s company-side binding must use `company_user_id` (the person party's user_id comes from the connection) — without this call it was unconstructible through the SDK.
+
+```python
+me = client.identity()
+run = client.trigger_flow_run(
+    flow_id, connection_id=conn.id,
+    bindings={"company": me["company_user_id"], "person": conn.person_id},
+)
+
+# Later, once the run is complete:
+answers = client.flow_run_answers(run.id)     # {slug: plaintext} — the company's copies
+
+# If the flow's output_mode is "document", download the company's OWN generated
+# copy (encrypted to the SERVICE key, unlike a per-person document_file()):
+pdf_bytes = client.flow_run_document(run.id)  # see Company documents above
+```
+
+* **Raises:** `AuthError`, `ApiError` (404 on `flow_run`/`flow_run_document` for an unknown run, or one with no generated document yet), `DecryptError`, `RateLimitError`, `ValidationError` (from `submit_flow_answers` on a slug failing field-type validation).
 
 ---
 

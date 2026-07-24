@@ -130,6 +130,16 @@ class HttpClient:
         """GET ``path`` (e.g. ``/api/company-data/connections``) → parsed body."""
         return self._request("GET", path, params=params)
 
+    def get_raw(self, path: str) -> bytes:
+        """GET returning the RAW 2xx response body bytes — NO JSON/XML parse.
+
+        For downloading file bytes whose body may be non-JSON (a broadcast
+        document's plaintext) — see
+        :meth:`allus_company_data.client.Client.document_file`. Auth/refresh/retry
+        handling is identical to :meth:`get`.
+        """
+        return self._request("GET", path, raw=True)
+
     def post(
         self,
         path: str,
@@ -160,6 +170,7 @@ class HttpClient:
         json_body: Any = None,
         raw_body: Optional[bytes] = None,
         content_type: Optional[str] = None,
+        raw: bool = False,
     ) -> Any:
         """The shared request loop for every verb.
 
@@ -169,6 +180,10 @@ class HttpClient:
         :class:`AuthError`; 429 → bounded Retry-After backoff then
         :class:`RateLimitError`; other non-2xx → :class:`ApiError` (carrying the
         body's ``error_key`` when present).
+
+        ``raw=True`` (used by :meth:`get_raw`) skips the JSON/XML parse on a 2xx
+        and returns the response body bytes as-is — auth/refresh/429 handling is
+        unchanged.
         """
         url = self._url(path)
         wants_xml = self._config.format == "xml"
@@ -196,6 +211,8 @@ class HttpClient:
             status = resp.status_code
 
             if 200 <= status < 300:
+                if raw:
+                    return resp.content
                 return self._parse_body(resp, wants_xml)
 
             if status == 401:

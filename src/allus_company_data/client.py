@@ -54,7 +54,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .config import Config
 from .crypto import decrypt as crypto_decrypt
-from .crypto import encrypt_for_public_key, load_private_key, load_public_key
+from .crypto import BinaryHandle, encrypt_for_public_key, load_private_key, load_public_key
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError, ValidationError
 from .field_validation import is_field_value_valid
 from .flow_condition import evaluate as evaluate_condition
@@ -602,6 +602,36 @@ class Client:
         body = self._http.get(f"{_DOCUMENTS}/{document_id}")
         return Document.from_api(_doc_obj(body), decrypt_value=self._decrypt_value)
 
+    def document_file(self, document_id: str) -> bytes:
+        """#491 gap 2: download a document's file BYTES. :meth:`document` returns
+        metadata only. This GETs ``/documents/{id}/file`` (via
+        :meth:`~allus_company_data.http.HttpClient.get_raw`, no JSON parse) and
+        branches on the document's storage mode (server contract):
+
+        * a BROADCAST (non-private) document is stored plaintext and served as RAW
+          bytes → returned as-is;
+        * a PER-PERSON / private document is encrypted to the RECIPIENT's key and
+          served as ``{"encrypted":true,"value":{"_enc":1,...}}`` — the company
+          CANNOT decrypt that with its service key, so this fails clearly
+          (``ApiError`` ``documents.recipient_encrypted``) rather than attempting a
+          doomed service-key decrypt. For a generated flow contract's OWN copy the
+          company uses :meth:`flow_run_document` — that copy IS service-key-encrypted.
+        """
+        raw = self._http.get_raw(f"{_DOCUMENTS}/{document_id}/file")
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            decoded = None
+        if isinstance(decoded, dict) and decoded.get("encrypted"):
+            raise ApiError(
+                0,
+                "documents.recipient_encrypted",
+                "This document is encrypted to its recipient and is not readable with the "
+                "company service key. For a generated flow contract, use "
+                "flow_run_document(run_id) to download the company copy.",
+            )
+        return raw  # broadcast / plaintext bytes
+
     def update_document_status(self, document_id: str, status: str) -> Document:
         """Set a document's lifecycle status (offering|ready_to_sign|active|active_but_ending|ended)."""
         body = self._http.put(f"{_DOCUMENTS}/{document_id}", json_body={"status": status})
@@ -676,6 +706,47 @@ class Client:
     def flow_run(self, run_id: str) -> FlowRun:
         """Fetch one run by id → :class:`FlowRun`."""
         return FlowRun.from_api(self._http.get(f"{_FLOW_RUNS}/{run_id}"))
+
+    def flow_run_answers(self, run) -> dict:
+        """#491 gap 1: a completed run's DECRYPTED answers as ``{slug: plaintext}``.
+
+        Accepts a :class:`FlowRun` or a run id (fetched via :meth:`flow_run`). The
+        public accessor for a finished run's answers; the private
+        :meth:`_decrypt_run_answers` it wraps is otherwise reached only inside
+        :meth:`process_flow_run`, which returns an already-completed run untouched,
+        so those answers were previously unreadable.
+        """
+        flow_run = run if isinstance(run, FlowRun) else self.flow_run(run)
+        return self._decrypt_run_answers(flow_run)
+
+    def flow_run_document(self, run_id: str) -> bytes:
+        """#491 gap 2: download the company's OWN copy of a run's generated flow
+        contract — the PLAINTEXT file bytes. GETs ``/flow-runs/{run_id}/document/file``,
+        which serves the company-party copy encrypted to the SERVICE key (unlike
+        :meth:`document_file`'s recipient-targeted copy), so the same
+        :class:`~allus_company_data.crypto.BinaryHandle` the slot-file download uses
+        decrypts it → the ``{"file":"data:…;base64,…"}`` envelope → the file bytes.
+        404 (``ApiError``) when the run has not generated a document yet.
+        """
+        return BinaryHandle(
+            value_url=f"{_FLOW_RUNS}/{run_id}/document/file",
+            fetch=self._binary_fetch,
+            decrypt=self._decrypt_value,
+        ).bytes()
+
+    def identity(self) -> dict:
+        """#491 gap 3: this client's OWN identity — ``{"company_user_id": ..., "service_id": ...}``
+        from ``GET /api/company-data/whoami``. The COMPANY party of a
+        :meth:`trigger_flow_run` binding must bind to ``company_user_id`` (the person
+        party's user_id comes from the connection), so without this the company-side
+        binding was unconstructible through the SDK.
+        """
+        body = self._http.get(f"{_BASE}/whoami")
+        body = body if isinstance(body, dict) else {}
+        return {
+            "company_user_id": body.get("company_user_id", ""),
+            "service_id": body.get("service_id", ""),
+        }
 
     def _service_public_key(self):
         """The service RSA public key = the public half of the loaded service private key.
