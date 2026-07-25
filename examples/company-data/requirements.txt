@@ -1,0 +1,9 @@
+# Dependencies for the company-data example ONLY — NOT part of the published
+# allus-company-data SDK package (the SDK's pyproject packages only src/).
+#
+#   - the local SDK under test, installed editable (path repo, like PHP's path repo)
+#   - requests: the example injects a small network-timeout Session into the SDK's
+#     HttpClient for the webhook change-feed fallback, so one blackholed feed poll
+#     cannot pin the single-worker server (requests is already an SDK dependency).
+-e ../..
+requests>=2.31
