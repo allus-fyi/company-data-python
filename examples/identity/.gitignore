@@ -1,8 +1,0 @@
-# Transients — never committed (installed deps + runtime state + fetched bundle).
-/.venv/
-/.runtime/
-/.frontend/
-/.frontend.download.tar.gz
-__pycache__/
-*.pyc
-.DS_Store

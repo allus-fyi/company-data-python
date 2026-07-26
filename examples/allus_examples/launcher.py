@@ -1,7 +1,7 @@
-"""Serve the identity example (contract v1) under a single-worker stdlib server.
+"""Serve the whole example suite (contract v3) under a single-worker stdlib server.
 
-Runs INSIDE the example's venv (deps installed), so ``allus_company_data`` +
-``authlib`` import cleanly. Steps mirror the PHP reference ``bin/start.php``:
+ONE server, ONE port, all three scenario families. Runs INSIDE the example's venv
+(deps installed), so ``allus_company_data`` + ``authlib`` import cleanly. Steps:
 
 1. wipe ``.runtime/`` (fresh state each boot),
 2. on a missing/unverified bundle: fetch the pinned frontend release
@@ -10,8 +10,8 @@ Runs INSIDE the example's venv (deps installed), so ``allus_company_data`` +
 3. assert the bundle's ``contract.json`` version == the backend's implemented
    contractVersion — refuse loudly on a mismatch or checksum failure,
 4. refuse a busy port with a clear message,
-5. serve with ``http.server.HTTPServer`` — ONE worker (serves one request at a
-   time; no threading), so requests serialize.
+5. serve with ``http.server.HTTPServer`` — ONE worker (serves one request at a time;
+   no threading), so requests serialize (incl. the public POST /webhook).
 """
 
 from __future__ import annotations
@@ -138,7 +138,8 @@ def _make_handler(server: Server):
         def _handle(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else b""
-            resp = server.dispatch(self.command, self.path, body)
+            headers = {k: v for k, v in self.headers.items()}
+            resp = server.dispatch(self.command, self.path, body, headers)
             self.send_response(resp.status)
             for name, value in resp.headers.items():
                 self.send_header(name, value)
@@ -161,7 +162,7 @@ def _make_handler(server: Server):
 
 def main() -> None:
     os.chdir(BASE_DIR)
-    sys.stderr.write("identity example (python) — starting up\n")
+    sys.stderr.write("allus example suite (python) — starting up\n")
 
     Runtime(BASE_DIR).wipe_all()  # fresh runtime state
 

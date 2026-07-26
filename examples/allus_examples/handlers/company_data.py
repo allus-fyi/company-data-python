@@ -1,8 +1,7 @@
-"""The demo-backend contract (v3), company-data family, for the Python SDK.
+"""Company-data scenario handlers (contract family: ``companydata:*``).
 
-HTTP dispatch -> handler -> the INTENDED allus SDK surface ONLY (no raw platform
-HTTP, no SDK internals). One class, one worker. Five scenarios, all namespaced
-``companydata:*``, all built from the SERVICE-role data :class:`Client`:
+Five scenarios, all built from the SERVICE-role data :class:`Client`, all through the
+INTENDED allus SDK surface (no raw platform HTTP, no SDK internals):
 
     read        — Client.connections()     -> connection-grouped decrypted values
     definitions — Client.request_fields()   -> your request-field catalog
@@ -11,31 +10,29 @@ HTTP, no SDK internals). One class, one worker. Five scenarios, all namespaced
                                               drain_batch() feed fallback; ONE accumulating run
     documents   — Client.create_document() ×6 -> the six document/contract types
 
-Settings flow (config-file model): the browser POSTs a scenario's setup values to
-``POST /api/scenarios/{id}/config``, which writes them to a canonical SDK config
-FILE (``.runtime/config/{sid}.json``). ``/start`` builds the Client from that file
-(``Client.from_config`` -> ``Config.from_file``) and runs OFF it — exactly as a
-real integrator wires the SDK. A ``/start`` with no saved config -> ``409
+``config()`` writes the browser's setup values to a canonical SDK config FILE;
+``start()`` builds the Client from that file (``Client.from_config`` ->
+``Config.from_file``) and runs OFF it. A ``/start`` with no saved config -> ``409
 not_configured``.
 """
 
 from __future__ import annotations
 
-import json
-import re
 from datetime import date, datetime
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
-
-import requests
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from allus_company_data import Client, Config, HttpClient, WebhookError
 from allus_company_data.crypto import BinaryHandle
 
-from .runtime import Runtime
-
-CONTRACT_VERSION = 3
-SDK = "python"
+from ..common import (
+    Response,
+    TimeoutSession,
+    header,
+    json_response,
+    parse_body,
+    text_response,
+)
+from ..runtime import Runtime
 
 READ = "companydata:read"
 DEFINITIONS = "companydata:definitions"
@@ -64,85 +61,32 @@ FEED_TIMEOUT_S = 3.0
 _HDR_WEBHOOK_ID = "x-allus-webhook-id"
 
 
-class Response:
-    __slots__ = ("status", "headers", "body")
+class CompanyDataHandlers:
+    """The company-data family, bound to the shared runtime."""
 
-    def __init__(self, status: int, headers: Dict[str, str], body: bytes) -> None:
-        self.status = status
-        self.headers = headers
-        self.body = body
-
-
-class _TimeoutSession(requests.Session):
-    """A requests.Session that applies a default network timeout to every call —
-    injected into the SDK client used by the webhook feed fallback so one blackholed
-    request cannot pin the single worker."""
-
-    def __init__(self, timeout: float) -> None:
-        super().__init__()
-        self._timeout = timeout
-
-    def request(self, *args: Any, **kwargs: Any):  # type: ignore[override]
-        kwargs.setdefault("timeout", self._timeout)
-        return super().request(*args, **kwargs)
-
-
-class Server:
-    def __init__(self, rt: Runtime, frontend_dir: str, sdk_version: str) -> None:
+    def __init__(self, rt: Runtime) -> None:
         self.rt = rt
-        self.frontend_dir = frontend_dir
-        self.sdk_version = sdk_version
 
-    # ── entry point ──────────────────────────────────────────────────────────
+    def scenario_list(self) -> List[Dict[str, Any]]:
+        return [{"id": i, "kind": k} for i, k in SCENARIOS.items()]
 
-    def dispatch(self, method: str, raw_path: str, body: bytes, headers: Dict[str, str]) -> Response:
-        self.rt.ensure_dirs()
-        self.rt.sweep()  # lazy TTL sweep on every request
+    def is_scenario(self, scenario_id: str) -> bool:
+        return scenario_id in SCENARIOS
 
-        path = urlparse(raw_path).path
-
-        try:
-            if path == "/api/meta" and method == "GET":
-                return self._meta()
-            if path == "/webhook" and method == "POST":
-                return self._webhook(body, headers)  # PUBLIC inbound delivery (not under /api/)
-            if path == "/api/clear" and method == "POST":
-                self.rt.clear_all()
-                return _json({"ok": True})
-
-            m = re.match(r"^/api/scenarios/([a-z:]+)/config$", path)
-            if m and method == "POST":
-                return self._config(m.group(1), body)
-            m = re.match(r"^/api/scenarios/([a-z:]+)/start$", path)
-            if m and method == "POST":
-                return self._start(m.group(1))
-            m = re.match(r"^/api/scenarios/([a-z:]+)/clear$", path)
-            if m and method == "POST":
-                self.rt.clear_scenario(m.group(1))
-                return _json({"ok": True})
-            m = re.match(r"^/api/runs/([0-9a-f]{32})$", path)
-            if m and method == "GET":
-                return self._run(m.group(1))
-
-            if path.startswith("/api/"):
-                return _json({"error": "not_found"}, 404)
-            return self._serve_static(path)
-        except Exception as exc:  # noqa: BLE001 — top-level guard, mirrors PHP
-            return _json({"error": "server_error", "message": str(exc)}, 500)
-
-    # ── GET /api/meta ─────────────────────────────────────────────────────────
-
-    def _meta(self) -> Response:
-        return _json({
-            "sdk": SDK,
-            "sdkVersion": self.sdk_version,
-            "contractVersion": CONTRACT_VERSION,
-            "scenarios": [{"id": i, "kind": k} for i, k in SCENARIOS.items()],
-        })
+    def clear(self, scenario_id: str) -> Response:
+        """Delete the scenario's run files + config + meta, drop the route (webhook), wipe
+        the pump cache, then GC unreferenced key PEMs."""
+        if not self.is_scenario(scenario_id):
+            return json_response({"error": "not_found"}, 404)
+        self.rt.clear_scenario(scenario_id)
+        if scenario_id == WEBHOOK:
+            self.rt.clear_route()
+        self.rt.wipe_cache()
+        return json_response({"ok": True})
 
     # ── POST /api/scenarios/{id}/config ──────────────────────────────────────
 
-    def _config(self, scenario_id: str, body: bytes) -> Response:
+    def config(self, scenario_id: str, body: bytes) -> Response:
         """Write the browser's setup values to a canonical SDK config FILE. Every company-data
         scenario uses the SERVICE-role Client, so the config always carries
         client_id/secret + the service PEM (by path) + passphrase. The webhook scenario adds
@@ -150,8 +94,8 @@ class Server:
         ``X-Allus-Webhook-Id`` header) and records the webhook id in the meta sidecar (the
         routing key ``/start`` needs). The documents scenario records the target share code."""
         if scenario_id not in SCENARIOS:
-            return _json({"error": "not_found"}, 404)
-        data = _body(body)
+            return json_response({"error": "not_found"}, 404)
+        data = parse_body(body)
 
         # Canonical SDK config — the service role for every company-data scenario.
         cfg: Dict[str, Any] = {
@@ -184,16 +128,16 @@ class Server:
         config_path = self.rt.write_config(scenario_id, cfg)
         self.rt.write_config_meta(scenario_id, meta)
 
-        return _json({"ok": True, "configPath": config_path})
+        return json_response({"ok": True, "configPath": config_path})
 
     # ── POST /api/scenarios/{id}/start ────────────────────────────────────────
 
-    def _start(self, scenario_id: str) -> Response:
+    def start(self, scenario_id: str) -> Response:
         if scenario_id not in SCENARIOS:
-            return _json({"error": "not_found"}, 404)
+            return json_response({"error": "not_found"}, 404)
         if not self.rt.has_config(scenario_id):
             # The run is built from the persisted config file, not the request body.
-            return _json({"error": "not_configured"}, 409)
+            return json_response({"error": "not_configured"}, 409)
 
         if scenario_id == READ:
             return self._data_run(scenario_id, self._do_read)
@@ -205,7 +149,7 @@ class Server:
             return self._data_run(scenario_id, self._do_documents)
         if scenario_id == WEBHOOK:
             return self._start_webhook()
-        return _json({"error": "not_found"}, 404)  # unreachable
+        return json_response({"error": "not_found"}, 404)  # unreachable
 
     def _data_run(
         self, scenario_id: str, do: Callable[[Client, List[str]], Dict[str, Any]]
@@ -221,7 +165,7 @@ class Server:
             self.rt.write_run(run_id, {"scenario": scenario_id, "status": "done", "result": result, "calls": calls})
         except Exception as exc:  # noqa: BLE001
             self.rt.write_run(run_id, {"scenario": scenario_id, "status": "failed", "error": str(exc), "calls": calls})
-        return _json({"runId": run_id, "action": {"type": "data"}})
+        return json_response({"runId": run_id, "action": {"type": "data"}})
 
     # companydata:read — Client.connections() grouped BY connection (one card per person), so two
     # people who both filled the same slug stay distinguishable.
@@ -306,7 +250,7 @@ class Server:
         Events arrive via POST /webhook and via a per-poll drain_batch() feed fallback."""
         webhook_id = str(self.rt.read_config_meta(WEBHOOK).get("webhook_id") or "")
         if not webhook_id:
-            return _json({"error": "not_configured"}, 409)
+            return json_response({"error": "not_configured"}, 409)
         run_id = self.rt.new_run_id()
         self.rt.write_run(run_id, {
             "scenario": WEBHOOK,
@@ -318,9 +262,9 @@ class Server:
             "calls": ["(webhook run started — POST /webhook receives; each poll also drain_batch()s the feed)"],
         })
         self.rt.write_route(webhook_id, run_id)
-        return _json({"runId": run_id, "action": {"type": "none"}})
+        return json_response({"runId": run_id, "action": {"type": "none"}})
 
-    def _webhook(self, body: bytes, headers: Dict[str, str]) -> Response:
+    def webhook(self, body: bytes, headers: Dict[str, str]) -> Response:
         """POST /webhook — the PUBLIC inbound delivery. The exact call/status sequence (never the
         combined handle_webhook(), which raises one WebhookError for BOTH bad-HMAC and a parse
         failure):
@@ -330,13 +274,13 @@ class Server:
               VERIFIED-but-unparseable delivery -> 200 acknowledge-and-note (increment unparseable).
         All accepted-and-dropped cases return 200 because the platform worker counts EXACTLY 200 as
         success (202/401/other = failure -> retry + circuit-break)."""
-        webhook_id = _header(headers, _HDR_WEBHOOK_ID)
+        webhook_id = header(headers, _HDR_WEBHOOK_ID)
         route = self.rt.read_route()
         if route is None or webhook_id is None or webhook_id != route["webhookId"]:
-            return _text("discarded: unknown or stale webhook id", 200)
+            return text_response("discarded: unknown or stale webhook id", 200)
         run = self.rt.read_run(route["runId"])
         if run is None:
-            return _text("discarded: no active webhook run", 200)
+            return text_response("discarded: no active webhook run", 200)
 
         client = self._webhook_client()
         _record_call(run, "Client.verify_webhook")
@@ -344,7 +288,7 @@ class Server:
             # A genuine signature failure — persist the attempted verify so the calls trace stays
             # truthful even on the reject path.
             self.rt.write_run(route["runId"], run)
-            return _text("signature verification failed", 401)
+            return text_response("signature verification failed", 401)
         try:
             _record_call(run, "Client.parse_webhook")
             change = client.parse_webhook(body, headers)
@@ -357,21 +301,17 @@ class Server:
                 "note": "received, could not parse", "raw": {"error": str(exc)},
             })
         self.rt.write_run(route["runId"], run)
-        return _text("ok", 200)
+        return text_response("ok", 200)
 
     # ── GET /api/runs/{runId} ─────────────────────────────────────────────────
 
-    def _run(self, run_id: str) -> Response:
-        run = self.rt.read_run(run_id)
-        if run is None:
-            return _json({"error": "not_found"}, 404)
-
+    def run(self, run_id: str, run: Dict[str, Any]) -> Response:
         # The accumulating webhook run: each poll also does ONE immediate drain_batch() raw feed
         # fetch (NOT process_changes(), which loops the pump to empty and could stall the single
         # worker) so events generated AFTER start still appear in deployed-no-tunnel mode.
         if str(run.get("scenario") or "") == WEBHOOK:
             run = self._webhook_feed_fallback(run_id, run)
-            return _json({
+            return json_response({
                 "status": run.get("status", "pending"),
                 "calls": run.get("calls", []),
                 "result": {
@@ -386,7 +326,7 @@ class Server:
             out["result"] = run["result"]
         if "error" in run:
             out["error"] = run["error"]
-        return _json(out)
+        return json_response(out)
 
     def _webhook_feed_fallback(self, run_id: str, run: Dict[str, Any]) -> Dict[str, Any]:
         """One immediate drain_batch() fetch per poll for the active webhook run, appending new
@@ -424,25 +364,7 @@ class Server:
         """The webhook scenario's Client, built from its config file with a network-timeout
         session so the per-poll drain_batch() fallback can never pin the single worker."""
         cfg = Config.from_file(self.rt.config_path_for(WEBHOOK))
-        return Client(cfg, http=HttpClient(cfg, session=_TimeoutSession(FEED_TIMEOUT_S)))
-
-    # ── plumbing ───────────────────────────────────────────────────────────────
-
-    def _serve_static(self, path: str) -> Response:
-        import os
-
-        rel = "index.html" if path in ("", "/") else path.lstrip("/")
-        root = os.path.realpath(self.frontend_dir)
-        full = os.path.realpath(os.path.join(root, rel))
-        # Path-traversal guard + SPA fallback to index.html.
-        if not full.startswith(root) or not os.path.isfile(full):
-            index = os.path.join(root, "index.html")
-            if os.path.isfile(index):
-                with open(index, "rb") as fh:
-                    return Response(200, {"Content-Type": "text/html; charset=utf-8"}, fh.read())
-            return Response(404, {"Content-Type": "text/plain"}, b"bundle not found")
-        with open(full, "rb") as fh:
-            return Response(200, {"Content-Type": _mime(full)}, fh.read())
+        return Client(cfg, http=HttpClient(cfg, session=TimeoutSession(FEED_TIMEOUT_S)))
 
 
 # ── change projection / value rendering ────────────────────────────────────────
@@ -586,55 +508,3 @@ def _minimal_pdf(label: str) -> bytes:
         pdf += f"{offsets[n]:010d} 00000 n \n".encode("latin-1")
     pdf += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF".encode("latin-1")
     return pdf
-
-
-# ── module helpers ────────────────────────────────────────────────────────────
-
-
-def _json(data: Any, status: int = 200) -> Response:
-    body = json.dumps(data).encode("utf-8")
-    return Response(status, {"Content-Type": "application/json"}, body)
-
-
-def _text(body: str, status: int = 200) -> Response:
-    return Response(status, {"Content-Type": "text/plain; charset=utf-8"}, body.encode("utf-8"))
-
-
-def _body(raw: bytes) -> Dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _header(headers: Dict[str, str], name: str) -> Optional[str]:
-    target = name.lower()
-    for key, value in headers.items():
-        if isinstance(key, str) and key.lower() == target:
-            return value
-    return None
-
-
-def _mime(path: str) -> str:
-    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-    return {
-        "html": "text/html; charset=utf-8",
-        "js": "text/javascript; charset=utf-8",
-        "mjs": "text/javascript; charset=utf-8",
-        "css": "text/css; charset=utf-8",
-        "json": "application/json; charset=utf-8",
-        "map": "application/json; charset=utf-8",
-        "svg": "image/svg+xml",
-        "png": "image/png",
-        "jpg": "image/jpeg",
-        "jpeg": "image/jpeg",
-        "gif": "image/gif",
-        "ico": "image/x-icon",
-        "woff": "font/woff",
-        "woff2": "font/woff2",
-        "ttf": "font/ttf",
-        "webp": "image/webp",
-    }.get(ext, "application/octet-stream")

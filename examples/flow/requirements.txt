@@ -1,7 +1,0 @@
-# Dependencies for the contract-flow example ONLY — NOT part of the published
-# allus-company-data SDK package (the SDK's pyproject packages only src/).
-#
-#   - the local SDK under test, installed editable (path repo, like PHP's path repo).
-#     It pulls its own runtime deps (cryptography, requests); the flow handler needs
-#     nothing beyond the SDK's intended top-level surface.
--e ../..

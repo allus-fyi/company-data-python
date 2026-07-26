@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""One-command launcher for the Python company-data example.
+"""One-command launcher for the Python allus SDK example suite.
 
     python bin/start.py            # (or: PORT=9000 python bin/start.py)
 
-Stdlib-only bootstrapper: it creates a local ``.venv`` and installs the example's
-own dependencies (the local ``allus-company-data`` SDK, editable) on first run,
-then hands off to ``company_data_example`` running under that venv. A present venv
-is reused (nothing is reinstalled).
+Stdlib-only bootstrapper: it creates a local ``.venv`` and installs the examples'
+own dependencies (the local ``allus-company-data`` SDK, editable, + Authlib for the
+OIDC identity scenarios) on first run, then hands off to ``allus_examples`` running
+under that venv — ONE server serving all three scenario families on one port. A
+present venv is reused (nothing is reinstalled).
 
-The example's deps live in ``requirements.txt`` — its OWN manifest, separate from
+The examples' deps live in ``requirements.txt`` — their OWN manifest, separate from
 the published SDK package (the SDK's ``pyproject.toml`` packages only ``src/``, so
-nothing here leaks into the SDK distribution).
+Authlib never leaks into the SDK distribution).
 
 The allus-company-data SDK requires Python >= 3.11, so invoke this launcher with a
 3.11+ interpreter (the venv inherits that interpreter).
@@ -40,16 +41,16 @@ def main() -> None:
         sys.stderr.write("creating venv + installing dependencies…\n")
         venv.EnvBuilder(with_pip=True).create(venv_dir)
         subprocess.check_call([py, "-m", "pip", "install", "-q", "--upgrade", "pip"])
-        # cwd=BASE so the requirements file's relative editable path (-e ../..) resolves
+        # cwd=BASE so the requirements file's relative editable path (-e ..) resolves
         # to the SDK root regardless of where the user invoked this launcher from.
         subprocess.check_call(
             [py, "-m", "pip", "install", "-q", "-r", "requirements.txt"], cwd=BASE
         )
 
     # Hand off to the server under the venv interpreter. PYTHONPATH exposes the
-    # example package (company_data_example) regardless of the caller's cwd.
+    # example package (allus_examples) regardless of the caller's cwd.
     env = dict(os.environ, PYTHONPATH=BASE)
-    os.execve(py, [py, "-m", "company_data_example", *sys.argv[1:]], env)
+    os.execve(py, [py, "-m", "allus_examples", *sys.argv[1:]], env)
 
 
 if __name__ == "__main__":
