@@ -78,7 +78,7 @@ Requires **Python ≥ 3.11**.
 
 ```bash
 pip install allus-company-data
-# or, working from this repo:  pip install -e '.[dev]'      # from sdks/python/
+# or, working from a clone:    pip install -e '.[dev]'      # from the repo root
 python -c "import allus_company_data; print(allus_company_data.__version__)"
 ```
 

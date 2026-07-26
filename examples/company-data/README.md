@@ -18,7 +18,8 @@ never internals, never raw platform HTTP.
 ## Run it — one command
 
 ```bash
-cd examples/company-data
+git clone https://github.com/allus-fyi/company-data-python
+cd company-data-python/examples/company-data
 python bin/start.py
 ```
 
@@ -77,42 +78,46 @@ and the per-poll feed fallback), and the frontend keeps polling and re-rendering
 
 ---
 
-## Default target — the deployed AWS platform
+## Default target — the deployed platform
 
-The scenario **advanced inputs default to the deployed platform** (owner decision
-2026-07-24: pre-launch, the cluster is the test environment): API url
+The scenario **advanced inputs default to the deployed platform**: API url
 `https://api.allme.fyi`. You register the demo's **service + data client** in the
-**allus portal at `portal.allus.fyi`**; each scenario's setup checklist names the
-exact portal steps (create the service + download its PEM, register a data client on
-it, configure request fields, connect a test person). To run against a **local
-stack** instead (see `docs/reference/software.html`), switch the advanced **API url**
-to `http://localhost:8070` in the browser — no file in this example changes.
+**allus portal at https://portal.allus.fyi**; each scenario's setup checklist names
+the exact portal steps (create the service + download its PEM, register a data client
+on it, configure request fields, connect a test person). If you run the platform API
+locally, switch the advanced **API url** to `http://localhost:8070` in the browser —
+no file in this example changes.
 
 ---
 
-## The webhook scenario — deployed (tunnel) vs local (native)
+## The webhook scenario — setup first; a tunnel stays optional
 
-The webhook receiver is dual-mode:
+This scenario is **setup-first**: register a webhook on your service in the portal,
+then paste its **webhook id** and one-time **HMAC secret** into the scenario before
+starting it — **the run refuses to start without them** (`server.py` answers
+`409 not_configured`). Set `encrypt_payload` OFF; this example holds no account
+private key.
 
-- **Local stack** — the local API's delivery worker reaches `localhost` directly, so
-  register **`http://localhost:8091/webhook`** as the service webhook. This is the
-  only mode where inbound webhooks work **without a tunnel**.
-- **Deployed platform** — the cluster cannot reach your `localhost`, so open one
-  tunnel (`cloudflared tunnel --url http://localhost:8091`) and register the printed
-  public URL with **`/webhook`** appended. Set **`encrypt_payload` OFF** (this example
-  holds no account private key; an encrypted body cannot be decrypted here). Copy the
-  **webhook id** and the one-time **HMAC secret** shown at registration into the
-  scenario's inputs.
+Once it is started you need **no tunnel** to see events: the same run **also polls
+the change feed** (`Client.drain_batch()`, one fetch per `GET /api/runs` poll, deduped
+on `Change.id`) as an **always-works fallback** (labeled `feed` vs `webhook`), so
+events appear even when nothing can deliver to your machine.
+
+**Optional / advanced — real inbound delivery.** To see the platform POST to your
+`/webhook` endpoint for real, the platform must be able to reach your machine. Open one
+tunnel (`cloudflared tunnel --url http://localhost:8091`) and register the printed
+public URL with **`/webhook`** appended as the service webhook in the portal. Set
+**`encrypt_payload` OFF** (this example holds no account private key; an encrypted body
+cannot be decrypted here). Copy the **webhook id** and the one-time **HMAC secret**
+shown at registration into the scenario's inputs. (If you run the platform API
+locally, it can reach `localhost` directly — register `http://localhost:8091/webhook`
+and skip the tunnel.)
 
 The exact receiver sequence (never the combined `handle_webhook()`, which can't
 split 401 from 200): read `X-Allus-Webhook-Id` → an unknown/stale id or no active run
 is a **200** discard; `verify_webhook()` false → **401**; `parse_webhook()` ok →
 append + **200**; a parse error on a *verified* delivery → **200** acknowledge (and
 increment `unparseable`). Only a **200** counts as success to the platform worker.
-
-Either way, the same run **also polls the change feed** (`Client.drain_batch()`, one
-fetch per `GET /api/runs` poll, deduped on `Change.id`) as an always-works fallback
-(labeled `feed` vs `webhook`), so events still appear even with no tunnel.
 
 ---
 

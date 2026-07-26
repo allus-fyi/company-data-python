@@ -14,6 +14,8 @@ localhost developer use.
 ## Run it
 
 ```bash
+git clone https://github.com/allus-fyi/company-data-python
+cd company-data-python/examples/identity
 python bin/start.py            # first run creates .venv + installs deps
 # or a different port (only one example runs at a time — shared browser origin):
 PORT=9000 python bin/start.py
