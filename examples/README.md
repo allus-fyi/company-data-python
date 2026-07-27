@@ -29,7 +29,19 @@ the standard library.
 
 ## Get the code
 
-Clone the SDK repository and change into this examples directory:
+The shortest path is the package manager: this suite ships **inside** the published
+`allus-company-data` package, so installing the SDK also gets you the example. Change
+into the copy that came with it:
+
+```bash
+pip install allus-company-data
+cd "$(python -c 'import allus_company_data.examples as e, os; print(os.path.dirname(e.__file__))')"
+```
+
+Install into a virtualenv you can write to — the launcher creates its own `.venv` and
+writes run state next to the suite.
+
+Or clone the SDK repository and change into this examples directory:
 
 ```bash
 git clone https://github.com/allus-fyi/company-data-python.git
@@ -48,8 +60,10 @@ PORT=9000 python bin/start.py
 bundle and serves the example test suite (all three scenario families) on
 http://localhost:8091.** In detail, the launcher:
 
-1. creates a local `.venv` and installs this suite's own `requirements.txt` (the
-   local SDK, editable, via `-e ..`, plus Authlib for the OIDC scenarios),
+1. creates a local `.venv` and installs this suite's own `requirements.txt` (Authlib
+   for the OIDC scenarios) plus the SDK itself — editable from `..` in a clone, or
+   the matching released version when you run the copy that shipped inside an
+   installed package,
 2. wipes `.runtime/` (fresh state every boot),
 3. downloads the **pinned** frontend release named in `frontend.lock`, **verifies its
    sha256**, and unpacks it to `.frontend/<tag>/` (a present, verified bundle is a
