@@ -25,8 +25,27 @@ dev = [
 Homepage = "https://github.com/allus-fyi/company-data-python"
 Repository = "https://github.com/allus-fyi/company-data-python"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+# The library package lives under src/. Since #493 the example suite ships INSIDE the
+# installed artifact too: `pip install` normally resolves the WHEEL, so grafting the
+# examples into the sdist via MANIFEST.in alone is not enough — the top-level examples/
+# tree is mapped into the package as `allus_company_data.examples` and its files ride
+# along as package data. The suite stays its own runnable project; it is simply carried
+# by the parent package rather than published separately.
+[tool.setuptools]
+packages = ["allus_company_data", "allus_company_data.examples"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+"allus_company_data.examples" = "examples"
+
+[tool.setuptools.package-data]
+"allus_company_data.examples" = ["**/*"]
+
+# Keep the suite's transients out of the wheel (the sdist is pruned in MANIFEST.in).
+[tool.setuptools.exclude-package-data]
+"allus_company_data.examples" = [
+    ".venv/**", ".runtime/**", ".frontend/**", "**/__pycache__/**", "*.frontend.download.tar.gz",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

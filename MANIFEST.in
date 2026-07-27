@@ -1,0 +1,9 @@
+# Ship the example suite's SOURCE inside the sdist too (#493). The wheel gets it via the
+# pyproject package-dir/package-data mapping; this covers `pip install` from an sdist and
+# anyone who downloads the tarball. Transients are pruned so only source ships.
+graft examples
+prune examples/.venv
+prune examples/.runtime
+prune examples/.frontend
+global-exclude *.pyc
+global-exclude *.frontend.download.tar.gz

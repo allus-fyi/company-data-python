@@ -167,8 +167,9 @@ By default this suite installs `allus-company-data` from a **local editable path
 **published** package instead, replace that line with a version spec (e.g.
 `allus-company-data>=<version>`), then `rm -rf .venv` and re-run.
 
-## Not part of the SDK package
+## Not a separately published package — but it ships with the SDK
 
-Everything here is example-only. The published `allus-company-data` package is defined
-by the SDK root `pyproject.toml`, which packages only `src/`; this `examples/` tree —
-and its Authlib dependency — is never distributed with the SDK.
+Everything here is example-only: the suite is not a separately published package. Since
+#493 the SDK root `pyproject.toml` maps this tree into the distribution as
+`allus_company_data.examples`, so `examples/` ships **inside** the installed SDK. Its own
+dependencies (such as Authlib) stay example-only and never become dependencies OF the SDK.
