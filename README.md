@@ -929,7 +929,26 @@ info = oauth.complete_sign_in(code, code_verifier=verifier)  # {user, mode, valu
 
 Modes: `signin` (identity), `one_time` (frozen claim values, decrypted for you), `connect` (a lasting connection),
 `2fa_enroll` (opt a person into 2FA — see below).
-`authorize_url(mode, claims=[Claim("email", suggest="email_personal")])` for one_time; `poll_result(state)` for the detached response mode.
+`authorize_url(mode, claims=[Claim("email", "email", suggest="email_personal")])`; `poll_result(state)` for the detached response mode.
+
+**#498 — a claim IS a request field.** You describe what you need and the **person** picks which of their
+own fields answers it; you never name a field. A claim carries a mandatory unique `name` (everything
+that comes back is keyed by it — `values`, `attestations`, and their stored choice for a repeat login),
+a field `type`, an optional `suggest`ed slug, `required`, and `verified` ("only a #311-verified answer
+will do"). A nameless or duplicate claim raises `ConfigError` at the call rather than failing at the
+API. `verified` is accepted only on the OIDC flow and only for a type allme can verify (today `email`);
+elsewhere it is refused with `invalid_request` rather than quietly dropped.
+
+`complete_sign_in` returns `{user, mode, two_factor, values, attestations}`.
+* `user.sub` **is** the person's share code and equals `share_code` — byte-identical to the id_token's
+  `sub`. `display_name` is gone: ask for a `name` claim and read `values["name"]`.
+* `attestations` is an additive sibling map keyed by the same claim name, present only for a `verified`
+  claim under encrypted delivery. Each entry carries a `verified` boolean **the SDK computes itself**,
+  in constant time, over the plaintext it just decrypted — plus the raw `hash`/`salt`/`verifiedAt`.
+  **A slug ABSENT from the map is "not attested", never "wrong"** (treat that value as unverified);
+  **an entry present with `verified` false is a MISMATCH and you must reject the value.** `verifiedAt`
+  attests the value as verified *at that moment*, not verified today.
+
 
 ## 2FA by allme (#436, #481)
 

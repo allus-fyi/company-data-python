@@ -104,22 +104,42 @@ def test_authorize_url_pkce_and_detached():
 
 def test_authorize_url_claims_validation():
     c = OAuthClient(_cfg())
+    # #498: every claim carries a mandatory `name` — the identity everything downstream is keyed by.
     claims = [
-        Claim("email", suggest="email_personal"),
-        Claim("photo"),          # binary → dropped
-        Claim("phone", required=True),
-        Claim(""),               # empty → dropped
+        Claim("email", "email", suggest="email_personal"),
+        Claim("avatar", "photo"),        # binary → dropped
+        Claim("phone", "phone", required=True),
+        Claim("nothing", ""),            # empty type → dropped
     ]
     _, q = _parse_url(c.authorize_url("one_time", claims=claims))
     parsed = json.loads(q["claims"])
     assert [x["type"] for x in parsed] == ["email", "phone"]
+    assert [x["name"] for x in parsed] == ["email", "phone"]
     assert parsed[0]["suggest"] == "email_personal"
     assert parsed[1]["required"] is True
 
 
+def test_authorize_url_claim_name_required():
+    """#498 §2: a nameless claim, and two sharing a name, are refused at the call that made them."""
+    c = OAuthClient(_cfg())
+    with pytest.raises(ConfigError):
+        c.authorize_url("one_time", claims=[Claim("", "email")])
+    with pytest.raises(ConfigError):
+        c.authorize_url("one_time", claims=[Claim("email", "email"), Claim("email", "text")])
+
+
+def test_authorize_url_claim_verified():
+    """#498 §3: `verified` travels on the wire, so an RP can demand a #311-attested answer."""
+    c = OAuthClient(_cfg())
+    _, q = _parse_url(c.authorize_url("signin", claims=[Claim("email", "email", verified=True)]))
+    parsed = json.loads(q["claims"])
+    assert len(parsed) == 1
+    assert parsed[0]["verified"] is True
+
+
 def test_authorize_url_caps_15_claims():
     c = OAuthClient(_cfg())
-    _, q = _parse_url(c.authorize_url("one_time", claims=[Claim("text") for _ in range(30)]))
+    _, q = _parse_url(c.authorize_url("one_time", claims=[Claim(f"c{i}", "text") for i in range(30)]))
     assert len(json.loads(q["claims"])) == 15
 
 
@@ -134,14 +154,17 @@ def test_authorize_url_invalid_mode():
 def test_exchange_and_userinfo():
     s = FakeSession()
     s.queue_post(FakeResp(200, {"access_token": "AT", "mode": "signin"}))
-    s.queue_get(FakeResp(200, {"sub": "u1", "share_code": "AB12CD", "display_name": "Alice", "mode": "signin", "two_factor": False}))
+    s.queue_get(FakeResp(200, {"sub": "AB12CD", "share_code": "AB12CD", "mode": "signin", "two_factor": False}))
     c = OAuthClient(_cfg(), session=s)
     tok = c.exchange_code("CODE", code_verifier="V")
     assert tok["access_token"] == "AT" and tok["mode"] == "signin"
     assert s.posts[0]["data"]["grant_type"] == "authorization_code"
     assert s.posts[0]["data"]["code_verifier"] == "V"
     info = c.userinfo("AT")
-    assert info["display_name"] == "Alice"
+    # #498 §5: `sub` IS the share code (byte-identical to the id_token's); display_name is gone.
+    assert info["sub"] == "AB12CD"
+    assert info["sub"] == info["share_code"]
+    assert "display_name" not in info
 
 
 def test_complete_sign_in_decrypts_values(tmp_path):
@@ -153,7 +176,7 @@ def test_complete_sign_in_decrypts_values(tmp_path):
     s = FakeSession()
     s.queue_post(FakeResp(200, {"access_token": "AT", "mode": "one_time"}))
     s.queue_get(FakeResp(200, {
-        "sub": "u1", "share_code": "AB12CD", "display_name": "Alice",
+        "sub": "AB12CD", "share_code": "AB12CD",
         "mode": "one_time", "two_factor": True,
         "values": {"email_personal": vec["text"]["wrapper"]},
     }))
@@ -161,7 +184,9 @@ def test_complete_sign_in_decrypts_values(tmp_path):
     out = c.complete_sign_in("CODE", code_verifier="V")
     assert out["mode"] == "one_time"
     assert out["two_factor"] is True
-    assert out["user"]["display_name"] == "Alice"
+    assert out["user"]["sub"] == "AB12CD"
+    # #498 §3.1a: no `values_attestation` on the wire → "not attested", never "wrong".
+    assert out["attestations"] == {}
     assert out["values"]["email_personal"] == vec["text"]["plaintext"]
 
 

@@ -46,7 +46,7 @@ from .flow_condition import (
     resolved_constants,
 )
 from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField, Value
-from .oauth import Claim, OAuthClient
+from .oauth import Attestation, Claim, OAuthClient
 from .two_factor import TwoFactorChallenge, TwoFactorClient, TwoFactorResult
 from .pump import Pump
 from .webhooks import handle_webhook, parse_webhook, verify_webhook
@@ -95,6 +95,7 @@ __all__ = [
     "LogEntry",
     # "Sign in with allme" — RP-side OAuth (#195)
     "OAuthClient",
+    "Attestation",
     "Claim",
     # contract-flow condition evaluator + computed constants (issue #79)
     "evaluate",

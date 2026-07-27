@@ -395,4 +395,7 @@ def _claims(data: Dict[str, Any]) -> List[str]:
 
 
 def _claim_objects(types: List[Any]) -> List[Claim]:
-    return [Claim(type=str(t)) for t in types]
+    # #498: a claim carries a mandatory, unique `name` — the key `values` and `attestations` come
+    # back under. The demo's config lists claim TYPES, so the type doubles as the name here; a real
+    # integration usually names them for its own domain ("billing_email").
+    return [Claim(name=str(t), type=str(t)) for t in types]
