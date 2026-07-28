@@ -30,6 +30,7 @@ import tarfile
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from .common import failure_response
 from .runtime import Runtime
 from .server import CONTRACT_VERSION, Server
 
@@ -140,10 +141,20 @@ def _make_handler(server: Server):
         protocol_version = "HTTP/1.1"
 
         def _handle(self) -> None:
-            length = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(length) if length else b""
-            headers = {k: v for k, v in self.headers.items()}
-            resp = server.dispatch(self.command, self.path, body, headers)
+            # Last-resort net BEHIND Server.dispatch()'s own guard, through the SAME
+            # ``failure_response`` helper so this process has exactly ONE failure envelope
+            # (#583 review pass 1, standards §1). Without it an escaping exception reaches
+            # ``BaseHTTPRequestHandler``, which answers NOTHING AT ALL — measured, the client raises
+            # ``RemoteDisconnected: Remote end closed connection without response`` — so the suite has
+            # no ``error`` to render and prints its ``start failed ({id})`` fallback. That is the same
+            # bodiless-500 defect #583 fixed in C#, reached one layer further out.
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length else b""
+                headers = {k: v for k, v in self.headers.items()}
+                resp = server.dispatch(self.command, self.path, body, headers)
+            except Exception as exc:  # noqa: BLE001 — outermost guard; nothing above answers
+                resp = failure_response(exc)
             self.send_response(resp.status)
             for name, value in resp.headers.items():
                 self.send_header(name, value)

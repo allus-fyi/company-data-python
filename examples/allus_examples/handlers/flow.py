@@ -29,7 +29,7 @@ from allus_company_data import (
     ValidationError,
 )
 
-from ..common import Response, jsonable, json_response, parse_body
+from ..common import Response, failure_response, jsonable, json_response, parse_body
 from ..runtime import Runtime, add_call
 
 # The single public scenario id (the flow family) and the internal store key its
@@ -167,9 +167,8 @@ class FlowHandlers:
             identity = client.identity()
             company_user_id = str(identity.get("company_user_id") or "")
             if not company_user_id:
-                return json_response(
-                    {"error": "identity_error", "message": "identity() returned no company_user_id"},
-                    502,
+                return failure_response(
+                    "identity() returned no company_user_id", "identity_error", 502
                 )
 
             # The CUSTOMER party binds to the connected person's public person_id.
@@ -177,12 +176,9 @@ class FlowHandlers:
             connection = client.connection(connection_id)
             person_id = connection.person_id
             if not person_id:
-                return json_response(
-                    {
-                        "error": "connection_error",
-                        "message": f"connection {connection_id} has no person_id "
-                        "(not found or not connected)",
-                    },
+                return failure_response(
+                    f"connection {connection_id} has no person_id (not found or not connected)",
+                    "connection_error",
                     502,
                 )
 
@@ -192,9 +188,9 @@ class FlowHandlers:
 
             flow_run_id = str(flow_run.id or "")
             if not flow_run_id:
-                return json_response({"error": "trigger_error", "message": "trigger_flow_run returned no run id"}, 502)
+                return failure_response("trigger_flow_run returned no run id", "trigger_error", 502)
         except (ApiError, ConfigError) as exc:
-            return json_response({"error": "start_failed", "message": str(exc)}, 502)
+            return failure_response(exc, "start_failed", 502)
 
         run_id = self.rt.new_run_id()
         self.rt.write_run(run_id, {

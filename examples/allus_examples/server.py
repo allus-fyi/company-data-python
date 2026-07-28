@@ -16,7 +16,7 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
-from .common import Response, json_response, mime
+from .common import Response, failure_response, json_response, mime
 from .handlers.company_data import CompanyDataHandlers
 from .handlers.flow import FlowHandlers
 from .handlers.identity import IdentityHandlers
@@ -47,14 +47,18 @@ class Server:
     # ── entry point ──────────────────────────────────────────────────────────
 
     def dispatch(self, method: str, raw_path: str, body: bytes, headers: Dict[str, str]) -> Response:
-        self.rt.ensure_dirs()
-        self.rt.sweep()  # lazy TTL sweep on every request
-
-        parsed = urlparse(raw_path)
-        path = parsed.path
-        query = parse_qs(parsed.query)
-
+        # EVERYTHING is inside the guard — request PREPROCESSING included (#583 review pass 1). Setup
+        # and parsing throw as readily as a handler does (``ensure_dirs()`` on an unwritable
+        # ``.runtime/``, ``urlparse`` on a malformed target), and preprocessing placed ABOVE the try
+        # escaped to the launcher — which, unlike this method, has no envelope to answer with.
         try:
+            self.rt.ensure_dirs()
+            self.rt.sweep()  # lazy TTL sweep on every request
+
+            parsed = urlparse(raw_path)
+            path = parsed.path
+            query = parse_qs(parsed.query)
+
             # ── shared endpoints ────────────────────────────────────────────
             if path == "/api/meta" and method == "GET":
                 return self._meta()
@@ -80,7 +84,8 @@ class Server:
                 return json_response({"error": "not_found"}, 404)
             return self._serve_static(path)
         except Exception as exc:  # noqa: BLE001 — top-level guard, mirrors PHP
-            return json_response({"error": "server_error", "message": str(exc)}, 500)
+            # The reason rides in `error`, because that is the only key the suite renders (#583).
+            return failure_response(exc)
 
     # ── GET /api/meta (aggregated across all three families) ───────────────────
 
