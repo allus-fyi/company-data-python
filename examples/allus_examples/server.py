@@ -68,7 +68,7 @@ class Server:
             # ── scenario-scoped routes -> the owning family's handler ───────
             m = _SCENARIO_ROUTE_RE.match(path)
             if m and method == "POST":
-                return self._scenario_route(m.group(1), m.group(2), body)
+                return self._scenario_route(m.group(1), m.group(2), body, headers)
 
             # ── run polls -> the family that owns the run (by its scenario) ─
             m = _RUN_ROUTE_RE.match(path)
@@ -97,9 +97,14 @@ class Server:
 
     # ── scenario dispatch ──────────────────────────────────────────────────────
 
-    def _scenario_route(self, scenario_id: str, action: str, body: bytes) -> Response:
+    def _scenario_route(
+        self, scenario_id: str, action: str, body: bytes, headers: Dict[str, str]
+    ) -> Response:
         """Route POST /api/scenarios/{id}/{config|start|enroll|clear} to the family that
-        owns ``scenario_id`` (ints -> identity, flow:* -> flow, companydata:* -> company)."""
+        owns ``scenario_id`` (ints -> identity, flow:* -> flow, companydata:* -> company).
+
+        ``headers`` reaches identity's config handler only: it derives the OAuth redirect URI
+        from the origin the browser used, so a phone on the LAN registers its own (#553)."""
         family = _family_for_id(scenario_id)
 
         if family == "identity":
@@ -107,7 +112,7 @@ class Server:
             if not self.identity.is_scenario(sid):
                 return json_response({"error": "not_found"}, 404)
             if action == "config":
-                return self.identity.config(sid, body)
+                return self.identity.config(sid, body, headers)
             if action == "start":
                 return self.identity.start(sid)
             if action == "enroll":

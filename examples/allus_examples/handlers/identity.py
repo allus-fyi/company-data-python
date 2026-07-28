@@ -74,7 +74,9 @@ class IdentityHandlers:
 
     # ── POST /api/scenarios/{id}/config ──────────────────────────────────────
 
-    def config(self, scenario_id: int, body: bytes) -> Response:
+    def config(
+        self, scenario_id: int, body: bytes, headers: Optional[Dict[str, str]] = None
+    ) -> Response:
         if SCENARIOS.get(scenario_id) != "runnable":
             return json_response({"error": "not_found"}, 404)
         data = parse_body(body)
@@ -82,7 +84,7 @@ class IdentityHandlers:
         cfg: Dict[str, Any] = {
             "api_url": (str(data.get("apiUrl") or "") or DEFAULT_API_URL).rstrip("/"),
             "oauth_client_id": str(data.get("oauthClientId") or ""),
-            "oauth_redirect_uri": self._redirect_uri(),
+            "oauth_redirect_uri": self._redirect_uri(headers),
         }
         secret = str(data.get("oauthClientSecret") or "")
         if secret:
@@ -380,8 +382,17 @@ class IdentityHandlers:
             redirect_uri=str(cfg.get("oauth_redirect_uri") or self._redirect_uri()),
         )
 
-    def _redirect_uri(self) -> str:
-        return f"http://localhost:{self.port}/callback"
+    def _redirect_uri(self, headers: Optional[Dict[str, str]] = None) -> str:
+        """The registered redirect URI: ``http://{host}/callback``, host = the origin the browser
+        used (#553). The server binds all interfaces, so a phone on the LAN saves ITS origin into
+        the config file and the OAuth round-trip returns to the phone, not to the phone's own
+        localhost. Falls back to localhost when no request headers are at hand."""
+        host = ""
+        for name, value in (headers or {}).items():
+            if name.lower() == "host":
+                host = str(value).strip()
+                break
+        return f"http://{host or f'localhost:{self.port}'}/callback"
 
 
 # ── module helpers ────────────────────────────────────────────────────────────

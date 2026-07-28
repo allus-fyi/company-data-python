@@ -71,11 +71,24 @@ http://localhost:8091.** In detail, the launcher:
 4. checks the bundle's `contract.json` version against the backend's (**contract v3**;
    a mismatch is refused loudly),
 5. refuses a busy port with a clear message, then
-6. serves `http://localhost:8091` with a **single-worker** `http.server` — one request
+6. serves port `8091` on **all interfaces** (`0.0.0.0`) and prints every URL it is
+   reachable on, with a **single-worker** `http.server` — one request
    at a time (requests serialize, so there are no locks), including the public
    `POST /webhook`.
 
 Open **http://localhost:8091** and pick a scenario.
+
+**From a phone or another machine on the same network.** The server binds **all
+interfaces**, so any device on your network can reach it — startup prints the exact
+`http://<your-lan-ip>:8091` URL to type, alongside the localhost one. Open that URL on
+the phone and press **Save** there: the redirect URI written into the config file
+follows the origin you used, so register the same `http://<your-lan-ip>:8091/callback`
+on your OAuth app. Binding all interfaces also means **anyone on your network can reach
+this demo**, and its setup panels accept and store real credentials under
+`.runtime/config/` — OAuth and data-client secrets, private-key PEMs and their
+passphrases, and webhook signing secrets. It is a local developer example, not a
+hardened service: run it only on a network you trust, and only with sandbox
+credentials.
 
 **Port.** `8091` is the default, overridable with `PORT`. The default is deliberately
 the **same across all allus SDK examples** (one browser origin ⇒ your localStorage

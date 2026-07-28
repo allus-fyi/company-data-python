@@ -11,11 +11,15 @@ ONE server, ONE port, all three scenario families. Runs INSIDE the example's ven
    contractVersion — refuse loudly on a mismatch or checksum failure,
 4. refuse a busy port with a clear message,
 5. serve with ``http.server.HTTPServer`` — ONE worker (serves one request at a time;
-   no threading), so requests serialize (incl. the public POST /webhook).
+   no threading), so requests serialize (incl. the public POST /webhook) — bound to
+   ALL interfaces (``0.0.0.0``) so a phone on the same network can reach it, printing
+   every URL it is reachable on (#553).
 """
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import hashlib
 import json
 import os
@@ -171,10 +175,11 @@ def main() -> None:
     _contract_guard(frontend)
 
     port = int(os.environ.get("PORT") or 8091)
-    # Refuse a busy port with a clear message.
+    # Refuse a busy port with a clear message — probe the SAME address the server binds
+    # (all interfaces), not just loopback.
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        probe.bind(("localhost", port))
+        probe.bind(("0.0.0.0", port))
     except OSError:
         _fail(
             f"port {port} is busy. Set PORT=<n> to use another port "
@@ -185,8 +190,9 @@ def main() -> None:
 
     rt = Runtime(BASE_DIR)
     srv = Server(rt, frontend, _sdk_version(), port)
-    httpd = HTTPServer(("localhost", port), _make_handler(srv))
-    sys.stderr.write(f"serving http://localhost:{port}  (Ctrl-C to stop)\n")
+    # ALL interfaces, so a phone on the same network can reach it (#553).
+    httpd = HTTPServer(("0.0.0.0", port), _make_handler(srv))
+    _print_reachable_urls(port)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -195,6 +201,138 @@ def main() -> None:
 
 
 # ── stdlib helpers ────────────────────────────────────────────────────────────
+
+
+def _print_reachable_urls(port: int) -> None:
+    """Announce every URL the server is reachable on (#553).
+
+    The server binds all interfaces, so a phone on the same network can reach it — but
+    only if the person holding the phone knows which address to type. Print the loopback
+    URL AND every non-loopback IPv4 address of this host, plus the plain warning that this
+    is now open to the local network.
+    """
+    w = sys.stderr.write
+    w(f"serving on ALL interfaces, port {port}  (all three scenario families; Ctrl-C to stop)\n")
+    w(f"  on this machine:  http://localhost:{port}\n")
+    lan = _lan_addresses()
+    if not lan:
+        w("  on this network:  (no non-loopback IPv4 address found — is this machine on a network?)\n")
+    else:
+        for i, addr in enumerate(lan):
+            label = "  on this network:  " if i == 0 else "                    "
+            w(f"{label}http://{addr}:{port}\n")
+    w("  NOTE: anyone on your network can now reach this demo, and its setup panels accept and\n")
+    w("        store real credentials under .runtime/config/ — OAuth and data-client secrets,\n")
+    w("        private-key PEMs and their passphrases, and webhook signing secrets. It is a local\n")
+    w("        developer example, not a hardened service: run it only on a network you trust, and\n")
+    w("        only with sandbox credentials.\n")
+
+
+def _lan_addresses() -> list:
+    """EVERY non-loopback, non-link-local IPv4 address of this host, one per interface.
+
+    IPv4 only — an IPv6 literal is not what anyone types into a phone.
+
+    This ENUMERATES the interfaces (POSIX ``getifaddrs(3)`` via ctypes), which is what the
+    other five SDKs get from their platform libraries (``net_get_interfaces``,
+    ``os.networkInterfaces``, ``net.Interfaces``, ``NetworkInterface.*``). Python's stdlib
+    has no interface API, and the two obvious substitutes are both WRONG here: a UDP route
+    probe returns the ONE source address for one destination, and ``getaddrinfo(gethostname())``
+    returns whatever the hostname resolves to. On a laptop with Wi-Fi plus a VPN or a docker
+    bridge each yields a single address — and not necessarily the one the phone can reach.
+    """
+    found: list = []
+
+    def add(addr: str) -> None:
+        if not addr or addr.startswith("127.") or addr.startswith("169.254."):
+            return
+        if addr not in found:
+            found.append(addr)
+
+    for addr in _getifaddrs_ipv4():
+        add(addr)
+    if found:
+        return found
+
+    # Fallback for a platform without getifaddrs (Windows): the single-address substitutes.
+    # Incomplete by construction — which is why it runs only when enumeration is unavailable.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))  # TEST-NET-1 (RFC 5737), never routed anywhere real
+        add(probe.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        probe.close()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            add(info[4][0])
+    except OSError:
+        pass
+
+    return found
+
+
+class _IfAddrs(ctypes.Structure):
+    """POSIX ``struct ifaddrs`` — same field order on Linux and macOS/BSD."""
+
+
+_IfAddrs._fields_ = [
+    ("ifa_next", ctypes.POINTER(_IfAddrs)),
+    ("ifa_name", ctypes.c_char_p),
+    ("ifa_flags", ctypes.c_uint),
+    ("ifa_addr", ctypes.c_void_p),
+    ("ifa_netmask", ctypes.c_void_p),
+    ("ifa_dstaddr", ctypes.c_void_p),
+    ("ifa_data", ctypes.c_void_p),
+]
+
+_IFF_UP = 0x1
+_IFF_LOOPBACK = 0x8
+
+
+def _getifaddrs_ipv4() -> list:
+    """Walk ``getifaddrs(3)`` and return the IPv4 address of every UP, non-loopback interface.
+
+    ``sockaddr`` differs in its first two bytes between the two POSIX families — Linux has a
+    16-bit ``sa_family``, macOS/BSD a 1-byte ``sa_len`` then a 1-byte ``sa_family`` — so the
+    family is read per-platform. The IPv4 address itself sits at offset 4 in both.
+    Returns ``[]`` (never raises) when the C library or the symbol is unavailable.
+    """
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+        getifaddrs = libc.getifaddrs
+        freeifaddrs = libc.freeifaddrs
+    except (OSError, AttributeError):
+        return []
+
+    getifaddrs.restype = ctypes.c_int
+    getifaddrs.argtypes = [ctypes.POINTER(ctypes.POINTER(_IfAddrs))]
+    freeifaddrs.argtypes = [ctypes.POINTER(_IfAddrs)]
+
+    head = ctypes.POINTER(_IfAddrs)()
+    if getifaddrs(ctypes.byref(head)) != 0:
+        return []
+
+    bsd_sockaddr = sys.platform.startswith(("darwin", "freebsd", "openbsd", "netbsd"))
+    out: list = []
+    try:
+        node = head
+        while node:
+            entry = node.contents
+            node = entry.ifa_next
+            if not entry.ifa_addr:
+                continue
+            if not (entry.ifa_flags & _IFF_UP) or (entry.ifa_flags & _IFF_LOOPBACK):
+                continue
+            raw = ctypes.string_at(entry.ifa_addr, 8)  # sockaddr_in's first 8 bytes
+            family = raw[1] if bsd_sockaddr else int.from_bytes(raw[0:2], sys.byteorder)
+            if family != socket.AF_INET:
+                continue
+            out.append(socket.inet_ntoa(raw[4:8]))
+    finally:
+        freeifaddrs(head)
+    return out
 
 
 def _sha256_file(path: str) -> str:
