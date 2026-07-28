@@ -189,7 +189,7 @@ def main() -> None:
         probe.close()
 
     rt = Runtime(BASE_DIR)
-    srv = Server(rt, frontend, _sdk_version(), port)
+    srv = Server(rt, frontend, _sdk_version())
     # ALL interfaces, so a phone on the same network can reach it (#553).
     httpd = HTTPServer(("0.0.0.0", port), _make_handler(srv))
     _print_reachable_urls(port)

@@ -1,4 +1,4 @@
-"""The Python allus SDK example suite — ONE single-worker localhost server that
+"""The Python allus SDK example suite — ONE single-worker local server that
 serves the shared portal frontend and implements the demo-backend contract (v3) for
 all three scenario families:
 

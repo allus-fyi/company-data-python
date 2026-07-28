@@ -54,14 +54,29 @@ DEFAULT_API_URL = "https://api.allme.fyi"
 # network timeout. The SDK's poll helpers separately bound their LOGICAL loop.
 POLL_TIMEOUT_S = 2.0
 
+# Refusal when the request carries no Host header, so the browser's origin is unknown (#574).
+# There is NO default host: substituting one (localhost) silently sends the round-trip to a
+# DIFFERENT origin than the browser is on — a different localStorage and a redirect URI the
+# OAuth app never registered.
+NO_ORIGIN = (
+    "no_origin — this request carried no Host header, so the OAuth redirect URI cannot be "
+    "derived from the origin your browser is using. Open the example by its address "
+    "(http://<host>:<port>/) and save the setup again."
+)
+
+# Refusal when the scenario's saved config holds no redirect URI to complete the exchange with.
+NO_STORED_ORIGIN = (
+    "no_origin — the saved config has no oauth_redirect_uri. Save the scenario setup again "
+    "from the browser you will complete the sign-in in."
+)
+
 
 class IdentityHandlers:
-    """The identity family, bound to the shared runtime + the server's port (for the
-    OAuth redirect URI)."""
+    """The identity family, bound to the shared runtime. The OAuth redirect URI is derived
+    from each request's own Host header — never from the server's port (#574)."""
 
-    def __init__(self, rt: Runtime, port: int) -> None:
+    def __init__(self, rt: Runtime) -> None:
         self.rt = rt
-        self.port = port
 
     def scenario_list(self) -> List[Dict[str, Any]]:
         return [{"id": i, "kind": k} for i, k in SCENARIOS.items()]
@@ -79,6 +94,10 @@ class IdentityHandlers:
     ) -> Response:
         if SCENARIOS.get(scenario_id) != "runnable":
             return json_response({"error": "not_found"}, 404)
+        # The redirect URI is derived from THIS request's origin and from nothing else (#574).
+        # Refuse rather than invent a host: the suite renders this sentence on Save.
+        if not _request_host(headers):
+            return json_response({"error": NO_ORIGIN}, 400)
         data = parse_body(body)
 
         cfg: Dict[str, Any] = {
@@ -375,27 +394,42 @@ class IdentityHandlers:
         from ..oidc import OidcClient
 
         cfg = self.rt.load_config(scenario_id)
+        # The SAME value the authorize URL carried, so the two legs of the exchange cannot
+        # diverge. An absent record is a loud failure, never a substituted host (#574).
+        redirect_uri = str(cfg.get("oauth_redirect_uri") or "")
+        if not redirect_uri:
+            raise ValueError(NO_STORED_ORIGIN)
         return OidcClient(
             issuer=str(cfg.get("api_url") or ""),
             client_id=str(cfg.get("oauth_client_id") or ""),
             client_secret=str(cfg.get("oauth_client_secret") or ""),
-            redirect_uri=str(cfg.get("oauth_redirect_uri") or self._redirect_uri()),
+            redirect_uri=redirect_uri,
         )
 
-    def _redirect_uri(self, headers: Optional[Dict[str, str]] = None) -> str:
+    def _redirect_uri(self, headers: Optional[Dict[str, str]]) -> str:
         """The registered redirect URI: ``http://{host}/callback``, host = the origin the browser
-        used (#553). The server binds all interfaces, so a phone on the LAN saves ITS origin into
-        the config file and the OAuth round-trip returns to the phone, not to the phone's own
-        localhost. Falls back to localhost when no request headers are at hand."""
-        host = ""
-        for name, value in (headers or {}).items():
-            if name.lower() == "host":
-                host = str(value).strip()
-                break
-        return f"http://{host or f'localhost:{self.port}'}/callback"
+        actually used (#553). The server binds all interfaces, so a phone on the LAN saves ITS
+        origin into the config file and the OAuth round-trip returns to the phone, not to the
+        phone's own localhost. Never falls back to a hardcoded host (#574) — ``127.0.0.1`` and
+        ``localhost`` are DIFFERENT origins for redirect matching and for browser storage alike,
+        so a substituted default drops the developer on an origin whose localStorage never held
+        the setup and whose URI the OAuth app never registered."""
+        host = _request_host(headers)
+        if not host:
+            raise ValueError(NO_ORIGIN)
+        return f"http://{host}/callback"
 
 
 # ── module helpers ────────────────────────────────────────────────────────────
+
+
+def _request_host(headers: Optional[Dict[str, str]]) -> str:
+    """The origin THIS request arrived on — the only source the redirect URI is ever derived
+    from. Header names are matched case-insensitively (the wire spelling is the client's)."""
+    for name, value in (headers or {}).items():
+        if name.lower() == "host":
+            return str(value).strip()
+    return ""
 
 
 def _claims(data: Dict[str, Any]) -> List[str]:

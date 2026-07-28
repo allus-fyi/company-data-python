@@ -33,13 +33,14 @@ _RUN_ROUTE_RE = re.compile(r"^/api/runs/([0-9a-f]{32})$")
 
 
 class Server:
-    def __init__(self, rt: Runtime, frontend_dir: str, sdk_version: str, port: int) -> None:
+    def __init__(self, rt: Runtime, frontend_dir: str, sdk_version: str) -> None:
         self.rt = rt
         self.frontend_dir = frontend_dir
         self.sdk_version = sdk_version
-        self.port = port
-        # The three families share the ONE runtime + this server's port.
-        self.identity = IdentityHandlers(rt, port)
+        # The three families share the ONE runtime. The server's port is deliberately NOT passed
+        # on: the OAuth redirect URI comes from each request's own Host header, never from a host
+        # synthesised out of the port (#574).
+        self.identity = IdentityHandlers(rt)
         self.flow = FlowHandlers(rt)
         self.company = CompanyDataHandlers(rt)
 
