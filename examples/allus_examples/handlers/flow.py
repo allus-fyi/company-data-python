@@ -30,7 +30,7 @@ from allus_company_data import (
 )
 
 from ..common import Response, jsonable, json_response, parse_body
-from ..runtime import Runtime
+from ..runtime import Runtime, add_call
 
 # The single public scenario id (the flow family) and the internal store key its
 # runtime files use (kept distinct from the identity int ids in the shared tree).
@@ -45,6 +45,43 @@ PARTY_CUSTOMER = "customer"
 
 # The canned INVALID value the validation-demo submits once for an email field.
 INVALID_EMAIL = "not-an-email"
+
+
+# ── the "what just happened" trace (#578) ─────────────────────────────────────
+# Every entry is ``<SDK method> — <what that call did in THIS scenario>``, appended AT
+# the call site, in the order the calls were made. The annotations are byte-identical in
+# all six SDK examples — only the method reference is written in the language's own idiom
+# — so one scenario teaches one thing whichever example a reader starts. Keep them in
+# step when this handler changes.
+CALL_SERVICE_BUILD = (
+    "Client.from_config — builds the SERVICE-role data client from the saved config file: "
+    "client credentials plus the service private key, decrypted with its passphrase"
+)
+CALL_IDENTITY = (
+    "Client.identity — GET /api/company-data/whoami: this service's own company_user_id, "
+    "which the COMPANY party binds to"
+)
+CALL_CONNECTION = (
+    "Client.connection — reads the configured connection; the connected person's id on it is "
+    "what the CUSTOMER party binds to"
+)
+CALL_TRIGGER = (
+    "Client.trigger_flow_run — starts a run of the published flow for that connection, pinning "
+    "the flow's latest published version"
+)
+CALL_FLOW_RUN = "Client.flow_run — re-read on every poll to see whose turn the run is on"
+CALL_PROCESS = (
+    "Client.process_flow_run — drives ONE company step: decrypts the answers so far, fills the "
+    "node, type-checks the values, encrypts a copy per party, submits — and generates the "
+    "document when the submit lands on a document-mode leaf"
+)
+CALL_ANSWERS = (
+    "Client.flow_run_answers — the completed run's answers, decrypted with the service key"
+)
+CALL_DOCUMENT = (
+    "Client.flow_run_document — downloads the company's own copy of the generated contract and "
+    "decrypts it with the service key"
+)
 
 
 class FlowHandlers:
@@ -122,11 +159,12 @@ class FlowHandlers:
 
         calls: List[str] = []
         try:
+            calls.append(CALL_SERVICE_BUILD)
             client = self._service_client()
 
             # The COMPANY party binds to this service's own company_user_id.
+            calls.append(CALL_IDENTITY)
             identity = client.identity()
-            calls.append("Client.identity")
             company_user_id = str(identity.get("company_user_id") or "")
             if not company_user_id:
                 return json_response(
@@ -135,8 +173,8 @@ class FlowHandlers:
                 )
 
             # The CUSTOMER party binds to the connected person's public person_id.
+            calls.append(CALL_CONNECTION)
             connection = client.connection(connection_id)
-            calls.append("Client.connection")
             person_id = connection.person_id
             if not person_id:
                 return json_response(
@@ -149,8 +187,8 @@ class FlowHandlers:
                 )
 
             bindings = {PARTY_COMPANY: company_user_id, PARTY_CUSTOMER: person_id}
+            calls.append(CALL_TRIGGER)
             flow_run = client.trigger_flow_run(flow_id, connection_id=connection_id, bindings=bindings)
-            calls.append("Client.trigger_flow_run")
 
             flow_run_id = str(flow_run.id or "")
             if not flow_run_id:
@@ -196,9 +234,10 @@ class FlowHandlers:
             return run
 
         try:
+            run["calls"] = add_call(run.get("calls", []), CALL_SERVICE_BUILD)
             client = self._service_client()
+            run["calls"] = add_call(run.get("calls", []), CALL_FLOW_RUN)
             flow_run = client.flow_run(flow_run_id)
-            run["calls"] = _add_call(run.get("calls", []), "Client.flow_run")
 
             status = str(flow_run.status or "")
             company_party = flow_run.company_party_key
@@ -249,9 +288,9 @@ class FlowHandlers:
                 filled.append({"slug": slug, "type": ftype, "submitted": value})
             return fill
 
+        run["calls"] = add_call(run.get("calls", []), CALL_PROCESS)
         try:
             client.process_flow_run(flow_run_id, fill_node)
-            run["calls"] = _add_call(run.get("calls", []), "Client.process_flow_run")
             # Advanced: every field filled for this node was accepted.
             steps = list(run.get("steps") or [])
             for f in filled:
@@ -267,7 +306,6 @@ class FlowHandlers:
         except ValidationError as exc:
             # The canned invalid value was rejected BEFORE submit — record it and mark
             # the node so the next poll submits the valid value. The node did NOT advance.
-            run["calls"] = _add_call(run.get("calls", []), "Client.process_flow_run")
             submitted = INVALID_EMAIL
             for f in filled:
                 if f["slug"] == exc.slug:
@@ -294,14 +332,14 @@ class FlowHandlers:
         """Terminal: fetch the decrypted answers and, for a document-mode run, download
         the generated contract's company copy (the run-scoped, service-key-decryptable
         surface)."""
+        run["calls"] = add_call(run.get("calls", []), CALL_ANSWERS)
         answers = client.flow_run_answers(flow_run)
-        run["calls"] = _add_call(run.get("calls", []), "Client.flow_run_answers")
         run["answers"] = [{"slug": str(slug), "value": jsonable(value)} for slug, value in answers.items()]
 
         if flow_run.output_mode == "document":
             try:
+                run["calls"] = add_call(run.get("calls", []), CALL_DOCUMENT)
                 data = client.flow_run_document(flow_run_id)
-                run["calls"] = _add_call(run.get("calls", []), "Client.flow_run_document")
                 run["document"] = {"status": "downloaded", "downloaded": True, "bytes": len(data)}
             except ApiError as exc:
                 # The run completed but the document is not retrievable yet — report, don't fail.
@@ -378,12 +416,3 @@ def _canned_value(ftype: str) -> str:
             "country": "NL",
         })
     return "Acme Corporation"
-
-
-def _add_call(calls: Any, name: str) -> List[str]:
-    """Append a call name preserving first-occurrence order (a poll may repeat
-    flow_run across polls)."""
-    out = [str(c) for c in (calls or [])]
-    if name not in out:
-        out.append(name)
-    return out

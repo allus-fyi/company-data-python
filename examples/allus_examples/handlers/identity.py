@@ -37,7 +37,7 @@ from ..common import (
     query_one,
     redirect,
 )
-from ..runtime import Runtime
+from ..runtime import Runtime, add_call
 
 # id -> "runnable" | "guide". Scenario 7 is the one guide card (no /start).
 SCENARIOS: Dict[int, str] = {
@@ -68,6 +68,109 @@ NO_ORIGIN = (
 NO_STORED_ORIGIN = (
     "no_origin — the saved config has no oauth_redirect_uri. Save the scenario setup again "
     "from the browser you will complete the sign-in in."
+)
+
+# ── the "what just happened" trace (#578) ─────────────────────────────────────
+# Every entry is ``<SDK method> — <what that call did in THIS scenario>``, appended AT
+# the call site, in the order the calls were made; an entry wrapped in parentheses is a
+# step that is deliberately NOT an SDK call. The annotations are byte-identical in all
+# six SDK examples — only the method reference is written in the language's own idiom —
+# so one scenario teaches one thing whichever example a reader starts. Keep them in step
+# when this handler changes: the panel is headed "What just happened", and a list that no
+# longer matches the code is worse than a short one.
+CALL_IDW_BUILD = (
+    "OAuthClient.from_config — builds the RP client from the saved config file: "
+    "client id, secret and the registered redirect URI"
+)
+CALL_IDW_BUILD_LOCAL = (
+    "OAuthClient(Config.from_idw_file(…)) — builds the RP client from the saved config file: "
+    "client id, secret and the registered redirect URI"
+)
+CALL_AUTH_SIGNIN = (
+    "OAuthClient.authorize_url — the consent URL the person is sent to "
+    "(mode signin, response_mode redirect, PKCE S256, state = this run id)"
+)
+CALL_AUTH_SIGNIN_DETACHED = (
+    "OAuthClient.authorize_url — the sign-in URL behind the link + QR "
+    "(mode signin, response_mode detached, PKCE S256, state = this run id)"
+)
+CALL_AUTH_ONE_TIME = (
+    "OAuthClient.authorize_url — the consent URL the person is sent to "
+    "(mode one_time, claims email + phone, PKCE S256, state = this run id)"
+)
+CALL_AUTH_CONNECT = (
+    "OAuthClient.authorize_url — the consent URL the person is sent to "
+    "(mode connect, PKCE S256, state = this run id)"
+)
+CALL_AUTH_ENROLL = (
+    "OAuthClient.authorize_url — the enrollment URL the person is sent to "
+    "(mode 2fa_enroll, response_mode redirect)"
+)
+CALL_AUTH_ENROLL_DETACHED = (
+    "OAuthClient.authorize_url — the enrollment URL behind the link + QR "
+    "(mode 2fa_enroll, response_mode detached)"
+)
+CALL_POLL_SIGNIN = (
+    "OAuthClient.poll_result — polls POST /oauth2/result until the phone delivers the code "
+    "(one 2s-bounded call per browser poll)"
+)
+CALL_POLL_ENROLL = (
+    "OAuthClient.poll_result — polls POST /oauth2/result until the phone delivers "
+    "{enrolled: true} (one 2s-bounded call per browser poll)"
+)
+CALL_COMPLETE_SIGNIN = (
+    "OAuthClient.complete_sign_in — exchanges the code + PKCE verifier at POST /oauth2/token, "
+    "then reads GET /api/oauth/userinfo; mode signin returns the identity only, no claim values"
+)
+CALL_COMPLETE_ONE_TIME = (
+    "OAuthClient.complete_sign_in — exchanges the code + PKCE verifier at POST /oauth2/token, "
+    "reads GET /api/oauth/userinfo, and decrypts every claim value with the OAuth app private key"
+)
+CALL_COMPLETE_CONNECT = (
+    "OAuthClient.complete_sign_in — exchanges the code + PKCE verifier at POST /oauth2/token, "
+    "then reads GET /api/oauth/userinfo; connect delivers no values here, the live ones come "
+    "from the data client below"
+)
+CALL_ENROLLED_CALLBACK = (
+    "(callback ?enrolled=true) — the redirect-leg enrollment outcome; there is nothing to "
+    "exchange, so no further SDK call"
+)
+CALL_SERVICE_BUILD = (
+    "Client.from_config — builds the SERVICE-role data client from the saved config file: "
+    "client credentials plus the service private key, decrypted with its passphrase"
+)
+CALL_CONNECTIONS_LIVE = (
+    "Client.connections — pages GET /api/company-data/connections and decrypts each person's "
+    "values with the service key; the run keeps the one whose share code just signed in"
+)
+CALL_TWO_FACTOR = (
+    "Client.two_factor — the service-2FA sub-client, on the same data-client credentials"
+)
+CALL_CHALLENGE = (
+    "TwoFactorClient.challenge — POST /api/service-2fa/challenges for the person's share code "
+    "with a per-run idempotency key; returns the challenge id, plus matching digits when the "
+    "service has number matching on"
+)
+CALL_WAIT_RESULT = (
+    "TwoFactorClient.wait_for_result — polls GET /api/service-2fa/challenges/{id} until the "
+    "status leaves pending: approved, denied, expired or revoked (one 2s-bounded call per "
+    "browser poll; the first terminal read burns the result)"
+)
+CALL_OIDC_DISCOVERY = (
+    "(oidc) requests.get(/.well-known/openid-configuration) — discovery: fetches "
+    "/.well-known/openid-configuration from the configured API base"
+)
+CALL_OIDC_AUTH_URL = (
+    "(oidc) OAuth2Session.create_authorization_url — the authorization URL "
+    "(scope openid profile email, PKCE S256, nonce, state = this run id)"
+)
+CALL_OIDC_TOKEN = (
+    "(oidc) OAuth2Session.fetch_token — exchanges the code at the discovered token endpoint "
+    "(client_secret_post + PKCE verifier)"
+)
+CALL_OIDC_VERIFY = (
+    "(oidc) jwt.decode — verifies the id_token against the JWKS: signature, issuer, audience "
+    "and nonce; the claims shown are that verified token's"
 )
 
 
@@ -162,11 +265,12 @@ class IdentityHandlers:
             mode = {1: "signin", 3: "one_time", 4: "connect"}[scenario_id]
             claims = _claim_objects(self.rt.read_config_meta(scenario_id).get("claims") or []) \
                 if scenario_id == 3 else None
+            run["calls"] = [self._idw_build_call(scenario_id), {3: CALL_AUTH_ONE_TIME, 4: CALL_AUTH_CONNECT}.get(
+                scenario_id, CALL_AUTH_SIGNIN)]
             oauth = self._oauth_client_for(scenario_id)
             url = oauth.authorize_url(
                 mode, claims=claims, state=run_id, response_mode="redirect", code_challenge=challenge,
             )
-            run["calls"] = ["OAuthClient.authorize_url"]
             self.rt.write_run(run_id, run)
             return json_response({"runId": run_id, "action": {"type": "redirect", "url": url}})
 
@@ -174,11 +278,11 @@ class IdentityHandlers:
             verifier, challenge = pkce.generate()
             run["verifier"] = verifier
             run["wait"] = "detached_signin"
+            run["calls"] = [self._idw_build_call(scenario_id), CALL_AUTH_SIGNIN_DETACHED]
             oauth = self._oauth_client_for(scenario_id)
             url = oauth.authorize_url(
                 "signin", state=run_id, response_mode="detached", code_challenge=challenge,
             )
-            run["calls"] = ["OAuthClient.authorize_url"]
             self.rt.write_run(run_id, run)
             return json_response({"runId": run_id, "action": {"type": "detached", "url": url}})
 
@@ -189,7 +293,7 @@ class IdentityHandlers:
             run["nonce"] = nonce
             oidc = self._oidc_client_for(scenario_id)
             url = oidc.authorization_url(state=run_id, nonce=nonce, code_verifier=verifier)
-            run["calls"] = ["(oidc) OAuth2Session.create_authorization_url"]
+            run["calls"] = [CALL_OIDC_DISCOVERY, CALL_OIDC_AUTH_URL]
             self.rt.write_run(run_id, run)
             return json_response({"runId": run_id, "action": {"type": "redirect", "url": url}})
 
@@ -200,10 +304,10 @@ class IdentityHandlers:
             idem_key = ("demo-" + run_id)[:64]  # backend-generated, per-run (SDK requires it)
             run["challengeIdemKey"] = idem_key
             run["wait"] = "challenge"
+            run["calls"] = [CALL_SERVICE_BUILD, CALL_TWO_FACTOR, CALL_CHALLENGE]
             client = self._service_client_for(scenario_id)
             challenge = client.two_factor.challenge(share_code, idem_key, context)
             run["challengeId"] = challenge.challenge_id
-            run["calls"] = ["Client.two_factor", "TwoFactorClient.challenge"]
             self.rt.write_run(run_id, run)
             return json_response({
                 "runId": run_id,
@@ -228,7 +332,10 @@ class IdentityHandlers:
 
         run = {
             "scenario": 8, "isEnroll": True, "status": "pending", "state": run_id,
-            "calls": ["OAuthClient.authorize_url"],
+            "calls": [
+                self._idw_build_call(scenario_id),
+                CALL_AUTH_ENROLL_DETACHED if response_mode == "detached" else CALL_AUTH_ENROLL,
+            ],
             "wait": "detached_enroll" if response_mode == "detached" else "enroll_redirect",
         }
         self.rt.write_run(run_id, run)
@@ -248,7 +355,7 @@ class IdentityHandlers:
             if query_one(query, "enrolled") == "true":
                 run["status"] = "done"
                 run["result"] = {"enrolled": True}
-                run.setdefault("calls", []).append("callback(enrolled=true)")
+                run["calls"] = add_call(run.get("calls"), CALL_ENROLLED_CALLBACK)
             elif query_one(query, "code"):
                 code = query_one(query, "code")
                 if scenario_id in (5, 6):
@@ -290,23 +397,23 @@ class IdentityHandlers:
         scenario_id = int(run.get("scenario") or 0)
         try:
             if wait == "detached_signin":
+                run["calls"] = add_call(run.get("calls"), CALL_POLL_SIGNIN)
                 oauth = self._oauth_client_for(scenario_id, POLL_TIMEOUT_S)
                 body = oauth.poll_result(str(run["state"]), timeout=2, interval=2)
-                run.setdefault("calls", []).append("OAuthClient.poll_result")
                 code = str(body.get("code") or "")
                 if code:
                     run = self._complete_signin(run, code)
             elif wait == "detached_enroll":
+                run["calls"] = add_call(run.get("calls"), CALL_POLL_ENROLL)
                 oauth = self._oauth_client_for(scenario_id, POLL_TIMEOUT_S)
                 body = oauth.poll_result(str(run["state"]), timeout=2, interval=2)
-                run.setdefault("calls", []).append("OAuthClient.poll_result")
                 if body.get("enrolled"):
                     run["status"] = "done"
                     run["result"] = {"enrolled": True}
             elif wait == "challenge":
+                run["calls"] = add_call(run.get("calls"), CALL_WAIT_RESULT)
                 client = self._service_client_for(scenario_id, POLL_TIMEOUT_S)
                 res = client.two_factor.wait_for_result(str(run["challengeId"]), timeout=2, interval=2)
-                run.setdefault("calls", []).append("TwoFactorClient.wait_for_result")
                 run["status"] = "done"
                 run["result"] = {"status": res.status, "completed_at": res.completed_at}
             # else (redirect / continue-on-phone): completion arrives via /callback — stay pending.
@@ -328,9 +435,11 @@ class IdentityHandlers:
 
     def _complete_signin(self, run: Dict[str, Any], code: str) -> Dict[str, Any]:
         scenario_id = int(run.get("scenario") or 0)
+        run["calls"] = add_call(run.get("calls"), {
+            3: CALL_COMPLETE_ONE_TIME, 4: CALL_COMPLETE_CONNECT,
+        }.get(scenario_id, CALL_COMPLETE_SIGNIN))
         oauth = self._oauth_client_for(scenario_id)
         out = oauth.complete_sign_in(code, run.get("verifier"))
-        run.setdefault("calls", []).append("OAuthClient.complete_sign_in")
         result: Dict[str, Any] = {
             "user": out.get("user"),
             "mode": out.get("mode"),
@@ -340,13 +449,14 @@ class IdentityHandlers:
 
         if scenario_id == 4:  # Connect: read the person's LIVE values via the service Client.
             share_code = str((out.get("user") or {}).get("share_code") or "")
+            run["calls"] = add_call(run.get("calls"), CALL_SERVICE_BUILD)
             client = self._service_client_for(scenario_id)
+            run["calls"] = add_call(run.get("calls"), CALL_CONNECTIONS_LIVE)
             live: Dict[str, Any] = {}
             for conn in client.connections():
                 if share_code and conn.share_code == share_code:
                     live = {slug: jsonable(v.value) for slug, v in conn.values.items()}
                     break
-            run.setdefault("calls", []).append("Client.connections")
             result["live_values"] = live
 
         run["status"] = "done"
@@ -356,14 +466,13 @@ class IdentityHandlers:
     def _complete_oidc(self, run: Dict[str, Any], code: str) -> Dict[str, Any]:
         scenario_id = int(run.get("scenario") or 0)
         oidc = self._oidc_client_for(scenario_id)
+        for _name in (CALL_OIDC_DISCOVERY, CALL_OIDC_TOKEN, CALL_OIDC_VERIFY):
+            run["calls"] = add_call(run.get("calls"), _name)
         claims = oidc.complete(
             code=code,
             state=str(run["state"]),
             code_verifier=str(run.get("verifier") or ""),
             nonce=str(run.get("nonce") or ""),
-        )
-        run.setdefault("calls", []).extend(
-            ["(oidc) OAuth2Session.fetch_token", "(oidc) jwt.decode (id_token verify)"]
         )
         run["status"] = "done"
         run["result"] = {"claims": claims}
@@ -376,12 +485,23 @@ class IdentityHandlers:
         kwargs: Dict[str, Any] = {}
         if poll_timeout is not None:
             kwargs["session"] = TimeoutSession(poll_timeout)
-        base = str(self.rt.read_config_meta(scenario_id).get("authorize_base") or "")
-        if base and base != DEFAULT_AUTHORIZE_URL:
+        if not self._uses_default_authorize_base(scenario_id):
             # Non-default authorize base (local-stack option): still load Config from the file, just
             # supply the alternate consent host the from_config wrapper cannot set.
+            base = str(self.rt.read_config_meta(scenario_id).get("authorize_base") or "")
             return OAuthClient(Config.from_idw_file(path), authorize_url=base, **kwargs)
         return OAuthClient.from_config(path, **kwargs)
+
+    def _uses_default_authorize_base(self, scenario_id: int) -> bool:
+        """Whether ``_oauth_client_for`` takes the named-constructor branch. The SAME predicate
+        decides the client AND the trace entry, so the panel can never name a constructor that did
+        not run (#578) — the local-stack option really does build the client a different way."""
+        base = str(self.rt.read_config_meta(scenario_id).get("authorize_base") or "")
+        return not base or base == DEFAULT_AUTHORIZE_URL
+
+    def _idw_build_call(self, scenario_id: int) -> str:
+        """The trace entry for the OAuth client ``_oauth_client_for`` just built (#578)."""
+        return CALL_IDW_BUILD if self._uses_default_authorize_base(scenario_id) else CALL_IDW_BUILD_LOCAL
 
     def _service_client_for(self, scenario_id: int, poll_timeout: Optional[float] = None) -> Client:
         path = self.rt.config_path_for(scenario_id)

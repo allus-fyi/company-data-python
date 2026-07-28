@@ -32,7 +32,7 @@ from ..common import (
     parse_body,
     text_response,
 )
-from ..runtime import Runtime
+from ..runtime import Runtime, record_call
 
 READ = "companydata:read"
 DEFINITIONS = "companydata:definitions"
@@ -57,6 +57,53 @@ DEFAULT_API_URL = "https://api.allme.fyi"
 # The webhook change-feed fallback runs one drain_batch() per poll; a small network
 # timeout on its SDK session keeps a blackholed feed from pinning the single worker.
 FEED_TIMEOUT_S = 3.0
+
+# ── the "what just happened" trace (#578) ─────────────────────────────────────
+# Every entry is ``<SDK method> — <what that call did in THIS scenario>``, appended AT
+# the call site, in the order the calls were made; an entry wrapped in parentheses is a
+# step that is deliberately NOT an SDK call. The annotations are byte-identical in all
+# six SDK examples — only the method reference is written in the language's own idiom —
+# so one scenario teaches one thing whichever example a reader starts. Keep them in step
+# when this handler changes.
+CALL_SERVICE_BUILD = (
+    "Client.from_config — builds the SERVICE-role data client from the saved config file: "
+    "client credentials plus the service private key, decrypted with its passphrase"
+)
+# The webhook scenario needs a network-timeout session, which the from_config wrapper
+# cannot set, so it constructs the same service-role client the long way round.
+CALL_SERVICE_BUILD_FILE = (
+    "Client(Config.from_file(…)) — builds the SERVICE-role data client from the saved config "
+    "file: client credentials plus the service private key, decrypted with its passphrase"
+)
+CALL_CONNECTIONS = (
+    "Client.connections — pages GET /api/company-data/connections: loads your request-field "
+    "catalog first for value typing, then decrypts each person's values with the service key"
+)
+CALL_REQUEST_FIELDS = (
+    "Client.request_fields — GET /api/company-data/request-fields: your own request-field "
+    "catalog, fetched once and cached for the life of the client"
+)
+CALL_PROCESS_CHANGES = (
+    "Client.process_changes — drains the change feed through the crash-safe pump: handler "
+    "before ack, at-least-once (dedup on Change.id), failures to the local dead-letter store"
+)
+CALL_CREATE_DOCUMENT = "Client.create_document — {label}"
+CALL_WEBHOOK_STARTED = (
+    "(webhook run started) — POST /webhook receives each delivery; every poll also drains the "
+    "change feed as a fallback"
+)
+CALL_VERIFY_WEBHOOK = (
+    "Client.verify_webhook — checks the delivery's X-Allus-Signature HMAC against the secret "
+    "configured for its X-Allus-Webhook-Id; a failure answers 401"
+)
+CALL_PARSE_WEBHOOK = (
+    "Client.parse_webhook — turns the verified body into a typed Change, decrypting its value "
+    "with the service key"
+)
+CALL_DRAIN_BATCH = (
+    "Client.drain_batch — the per-poll feed fallback: one unbuffered drain, so events still show "
+    "up when no delivery can reach this machine"
+)
 
 _HDR_WEBHOOK_ID = "x-allus-webhook-id"
 
@@ -160,6 +207,7 @@ class CompanyDataHandlers:
         run_id = self.rt.new_run_id()
         calls: List[str] = []
         try:
+            calls.append(CALL_SERVICE_BUILD)
             client = Client.from_config(self.rt.config_path_for(scenario_id))
             result = do(client, calls)
             self.rt.write_run(run_id, {"scenario": scenario_id, "status": "done", "result": result, "calls": calls})
@@ -170,6 +218,7 @@ class CompanyDataHandlers:
     # companydata:read — Client.connections() grouped BY connection (one card per person), so two
     # people who both filled the same slug stay distinguishable.
     def _do_read(self, client: Client, calls: List[str]) -> Dict[str, Any]:
+        calls.append(CALL_CONNECTIONS)
         connections = []
         for conn in client.connections():
             values = [
@@ -189,23 +238,23 @@ class CompanyDataHandlers:
                 "shareCode": conn.share_code,
                 "values": values,
             })
-        calls.append("Client.connections")
         return {"connections": connections}
 
     # companydata:definitions — Client.request_fields() → your request-field catalog (the folded
     # mandatory bool + one_time; the raw split flags are debug-only, off the intended surface).
     def _do_definitions(self, client: Client, calls: List[str]) -> Dict[str, Any]:
+        calls.append(CALL_REQUEST_FIELDS)
         fields = [
             {"slug": f.slug, "label": f.label, "type": f.type, "mandatory": f.mandatory, "one_time": f.one_time}
             for f in client.request_fields()
         ]
-        calls.append("Client.request_fields")
         return {"fields": fields}
 
     # companydata:changes — Client.process_changes() drains the feed on start through the crash-safe
     # pump (handler-before-ack, at-least-once), so the append handler is idempotent on the pull-feed
     # Change.id.
     def _do_changes(self, client: Client, calls: List[str]) -> Dict[str, Any]:
+        calls.append(CALL_PROCESS_CHANGES)
         events: List[Dict[str, Any]] = []
         seen: Set[str] = set()
 
@@ -217,7 +266,6 @@ class CompanyDataHandlers:
             events.append(_project_change(c, None))
 
         client.process_changes(handler)
-        calls.append("Client.process_changes")
         return {"events": events, "drained": True}
 
     # companydata:documents — Client.create_document() for each of the six document/contract types
@@ -236,9 +284,9 @@ class CompanyDataHandlers:
                         "share code in the setup, then re-run"
                     )
                 opts["share_code"] = share_code
+            calls.append(CALL_CREATE_DOCUMENT.format(label=spec["label"]))
             doc = client.create_document(**opts)
             docs.append({"index": i + 1, "label": spec["label"], "document_id": doc.id, "status": doc.status})
-        calls.append(f"Client.create_document ×{len(specs)}")
         return {"docs": docs}
 
     # ── companydata:webhook — the accumulating run + public receiver ──────────
@@ -259,7 +307,7 @@ class CompanyDataHandlers:
             "events": [],
             "seenFeedIds": [],  # feed-only dedup set for the drain_batch() fallback
             "unparseable": 0,
-            "calls": ["(webhook run started — POST /webhook receives; each poll also drain_batch()s the feed)"],
+            "calls": [CALL_WEBHOOK_STARTED],
         })
         self.rt.write_route(webhook_id, run_id)
         return json_response({"runId": run_id, "action": {"type": "none"}})
@@ -282,15 +330,16 @@ class CompanyDataHandlers:
         if run is None:
             return text_response("discarded: no active webhook run", 200)
 
+        record_call(run, CALL_SERVICE_BUILD_FILE)
         client = self._webhook_client()
-        _record_call(run, "Client.verify_webhook")
+        record_call(run, CALL_VERIFY_WEBHOOK)
         if not client.verify_webhook(body, headers):
             # A genuine signature failure — persist the attempted verify so the calls trace stays
             # truthful even on the reject path.
             self.rt.write_run(route["runId"], run)
             return text_response("signature verification failed", 401)
         try:
-            _record_call(run, "Client.parse_webhook")
+            record_call(run, CALL_PARSE_WEBHOOK)
             change = client.parse_webhook(body, headers)
             run["events"].append(_project_change(change, "webhook"))
         except WebhookError as exc:
@@ -338,10 +387,11 @@ class CompanyDataHandlers:
             return run  # superseded/cleared — this run no longer pulls
         seen: Set[str] = set(run.get("seenFeedIds", []))
         try:
+            build_new = record_call(run, CALL_SERVICE_BUILD_FILE)
             client = self._webhook_client()
             # Every poll ATTEMPTS the feed pull — record the call now (deduped), so an empty poll
             # still reports the drain_batch it performed rather than claiming no call.
-            drain_new = _record_call(run, "Client.drain_batch")
+            drain_new = record_call(run, CALL_DRAIN_BATCH)
             appended = False
             for change in client.drain_batch():
                 cid = change.id
@@ -352,7 +402,7 @@ class CompanyDataHandlers:
                     run["seenFeedIds"].append(cid)
                 run["events"].append(_project_change(change, "feed"))
                 appended = True
-            if appended or drain_new:
+            if appended or drain_new or build_new:
                 self.rt.write_run(run_id, run)
         except Exception:  # noqa: BLE001 — a blackholed/failed feed must not fail the run
             pass
@@ -432,16 +482,6 @@ def _stringify(v: Any) -> Any:
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt is not None else None
-
-
-def _record_call(run: Dict[str, Any], name: str) -> bool:
-    """Append an SDK-call name to a run's ``calls`` trace, deduped. Returns True when newly added
-    (so the caller can persist on that transition)."""
-    calls = run.setdefault("calls", [])
-    if name in calls:
-        return False
-    calls.append(name)
-    return True
 
 
 # ── the six document/contract specs (payloads verbatim from apitests/php/documents.php) ─────────
