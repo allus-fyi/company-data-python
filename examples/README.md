@@ -139,7 +139,8 @@ The scenario advanced inputs default to the deployed platform (API url
 `https://api.allme.fyi`). You register the demo's **service + data client**, create
 request fields, connect a test person, and import/publish flows in the **allus portal
 at https://portal.allus.fyi**. Each scenario's setup checklist names the exact portal
-steps. To run against a local stack instead, switch the advanced **API url** to your
+steps, and a table beneath it gives the intended value for every control on every portal
+form it sends you to — including the ones to leave alone. To run against a local stack instead, switch the advanced **API url** to your
 local API in the browser — no file in this suite changes.
 
 ### Flow — the two fixtures
