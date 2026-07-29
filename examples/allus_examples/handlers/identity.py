@@ -46,6 +46,12 @@ SCENARIOS: Dict[int, str] = {
 }
 SERVICE_SCENARIOS = (4, 8)      # also read live values via the service data Client
 OAUTH_URL_SCENARIOS = (1, 2, 3, 4, 8)  # build a consent URL via OAuthClient
+# Scenarios whose complete_sign_in() response can carry claim values (userinfo "values"
+# non-empty) and therefore need the OAuth app private key configured to decrypt them: mode
+# one_time and mode connect, both delivered as app-key ciphertext through userinfo. Mode signin
+# (scenarios 1, 2) never carries values; scenario 8 never calls this leg at all; scenarios 5/6
+# run Authlib instead of this SDK's decrypt path.
+CLAIM_VALUE_SCENARIOS = (3, 4)
 
 DEFAULT_API_URL = "https://api.allme.fyi"
 
@@ -127,8 +133,8 @@ CALL_COMPLETE_ONE_TIME = (
 )
 CALL_COMPLETE_CONNECT = (
     "OAuthClient.complete_sign_in — exchanges the code + PKCE verifier at POST /oauth2/token, "
-    "then reads GET /api/oauth/userinfo; connect delivers no values here, the live ones come "
-    "from the data client below"
+    "reads GET /api/oauth/userinfo, and decrypts the consented claim values with the OAuth app "
+    "private key; the connection's live values still come separately from the data client below"
 )
 CALL_ENROLLED_CALLBACK = (
     "(callback ?enrolled=true) — the redirect-leg enrollment outcome; there is nothing to "
@@ -211,8 +217,9 @@ class IdentityHandlers:
         if secret:
             cfg["oauth_client_secret"] = secret
 
-        # Scenario 3 (one_time): the OAuth app private key decrypts the claim values.
-        if scenario_id == 3:
+        # Any scenario whose run can carry claim values (CLAIM_VALUE_SCENARIOS) needs the OAuth
+        # app private key to decrypt them.
+        if scenario_id in CLAIM_VALUE_SCENARIOS:
             pem = str(data.get("oauthPrivateKeyPem") or "")
             if pem:
                 cfg["oauth_private_key"] = self.rt.materialize_config_key(pem)
