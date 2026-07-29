@@ -8,7 +8,7 @@ SDK call implements each scenario, across **three families**:
 |---|---|---|
 | **Identity** | *Sign in with allme* (redirect + detached), one-time claims, connect, OIDC login (via a real third-party OIDC client), 2FA guide, standalone service-2FA + enrollment | the OAuth / OIDC / 2FA surface a website uses to sign a person in |
 | **Flow** | run a contract flow end-to-end | trigger a flow run, drive the company steps with type-checked filling, hand a turn to the person's phone, read the decrypted answers, download a generated contract |
-| **Company-data** | connections, request-field definitions, change-feed pump, webhook receiver, create the six document types | the regular company-data surface a company uses to read connected people and receive updates |
+| **Company-data** | connections, request-field definitions, change-feed pump, webhook receiver, create document types (six offered, pick which to create) | the regular company-data surface a company uses to read connected people and receive updates |
 
 ~90 % of the logic is a shared frontend fetched from a pinned release; this directory
 is the thin Python backend. Everything the handlers do goes through the SDK's
@@ -133,7 +133,7 @@ Open a family's handler file and you see the SDK calls directly:
 | Request-field definitions (`companydata:definitions`) | company_data.py | `Client.request_fields()` |
 | Change-feed pump (`companydata:changes`) | company_data.py | `Client.process_changes()` |
 | Webhook receiver (`companydata:webhook`) | company_data.py | `Client.verify_webhook()` + `parse_webhook()` + a `drain_batch()` feed fallback |
-| Create the six document types (`companydata:documents`) | company_data.py | `Client.create_document()` ×6 |
+| Create document types (`companydata:documents`) | company_data.py | `Client.create_document()` per selected type (six offered, all ticked by default) |
 
 The scaffolding shared by all three families (runtime state, launcher, router, bundle
 fetch+verify, contract guard, port guard, config-file writing, run store, clear) lives

@@ -8,7 +8,8 @@ INTENDED allus SDK surface (no raw platform HTTP, no SDK internals):
     changes     — Client.process_changes()  -> a crash-safe pump drain (idempotent on Change.id)
     webhook     — verify_webhook()+parse_webhook() -> a public POST /webhook receiver + a
                                               drain_batch() feed fallback; ONE accumulating run
-    documents   — Client.create_document() ×6 -> the six document/contract types
+    documents   — Client.create_document() -> the document/contract types selected in setup
+                                              (six offered, all ticked by default)
 
 ``config()`` writes the browser's setup values to a canonical SDK config FILE;
 ``start()`` builds the Client from that file (``Client.from_config`` ->
@@ -170,6 +171,10 @@ class CompanyDataHandlers:
                 meta["webhook_id"] = webhook_id  # the routing key /start writes into the route record
         if scenario_id == DOCUMENTS:
             meta["share_code"] = str(data.get("shareCode") or "")  # the per-person/contract target
+            # Preserve presence so _do_documents() can distinguish an explicit empty selection
+            # from an absent selection; absence means all document types.
+            if "documentTypes" in data:
+                meta["document_types"] = [str(v) for v in (data.get("documentTypes") or [])]
 
         config_path = self.rt.write_config(scenario_id, cfg)
         self.rt.write_config_meta(scenario_id, meta)
@@ -267,14 +272,20 @@ class CompanyDataHandlers:
         client.process_changes(handler)
         return {"events": events, "drained": True}
 
-    # companydata:documents — Client.create_document() for each of the six document/contract types
-    # (payloads match a known-good reference fixture set). The per-person / private / contract types
-    # target the connected person by share code (from the setup sidecar).
+    # companydata:documents — Client.create_document() for each SELECTED document/contract type, of
+    # the six the scenario offers (payloads match a known-good reference fixture set). The
+    # per-person / private / contract types target the connected person by share code (from the
+    # setup sidecar). Selection comes from the sidecar's document_types list; absence means all six.
     def _do_documents(self, client: Client, calls: List[str]) -> Dict[str, Any]:
-        share_code = str(self.rt.read_config_meta(DOCUMENTS).get("share_code") or "")
+        meta = self.rt.read_config_meta(DOCUMENTS)
+        share_code = str(meta.get("share_code") or "")
+        has_types = "document_types" in meta
+        selected_types = [str(v) for v in (meta.get("document_types") or [])]
         specs = _document_specs()
         docs = []
-        for i, spec in enumerate(specs):
+        for spec in specs:
+            if has_types and spec["key"] not in selected_types:
+                continue  # deselected in setup — the scenario runs exactly what was chosen
             opts = dict(spec["opts"])
             if spec["perPerson"]:
                 if not share_code:
@@ -285,7 +296,7 @@ class CompanyDataHandlers:
                 opts["share_code"] = share_code
             calls.append(CALL_CREATE_DOCUMENT.format(label=spec["label"]))
             doc = client.create_document(**opts)
-            docs.append({"index": i + 1, "label": spec["label"], "document_id": doc.id, "status": doc.status})
+            docs.append({"index": len(docs) + 1, "label": spec["label"], "document_id": doc.id, "status": doc.status})
         return {"docs": docs}
 
     # ── companydata:webhook — the accumulating run + public receiver ──────────
@@ -489,29 +500,29 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
 
 def _document_specs() -> List[Dict[str, Any]]:
     return [
-        {"label": "Broadcast plaintext JSON (no target)", "perPerson": False, "opts": {
+        {"key": "broadcast_json", "label": "Broadcast plaintext JSON (no target)", "perPerson": False, "opts": {
             "name": "Service notice", "payload_kind": "json",
             "json_value": {"msg": "Scheduled maintenance Sunday"},
         }},
-        {"label": "Broadcast PDF file (no target)", "perPerson": False, "opts": {
+        {"key": "broadcast_pdf", "label": "Broadcast PDF file (no target)", "perPerson": False, "opts": {
             "name": "Price list", "payload_kind": "file",
             "file_bytes": _minimal_pdf("Price list"), "file_mime": "application/pdf",
         }},
-        {"label": "Per-person NON-private file", "perPerson": True, "opts": {
+        {"key": "per_person_file", "label": "Per-person NON-private file", "perPerson": True, "opts": {
             "name": "Your invoice", "payload_kind": "file",
             "file_bytes": _minimal_pdf("Your invoice"), "file_mime": "application/pdf",
         }},
-        {"label": "Per-person PRIVATE file (lock → reveal)", "perPerson": True, "opts": {
+        {"key": "per_person_private", "label": "Per-person PRIVATE file (lock → reveal)", "perPerson": True, "opts": {
             "name": "Confidential report", "payload_kind": "file", "is_private": True,
             "file_bytes": _minimal_pdf("Confidential report"), "file_mime": "application/pdf",
         }},
-        {"label": "CONTRACT requiring SIGNATURE", "perPerson": True, "opts": {
+        {"key": "contract_signature", "label": "CONTRACT requiring SIGNATURE", "perPerson": True, "opts": {
             "name": "Service agreement", "kind": "agreement", "payload_kind": "file",
             "requires_signature": True,
             "file_bytes": _minimal_pdf("Service agreement"), "file_mime": "application/pdf",
             "metadata": {"can_be_cancelled_in_app": True},
         }},
-        {"label": "CONTRACT requiring ACCEPTANCE", "perPerson": True, "opts": {
+        {"key": "contract_acceptance", "label": "CONTRACT requiring ACCEPTANCE", "perPerson": True, "opts": {
             "name": "Terms update", "kind": "agreement", "payload_kind": "json",
             "requires_acceptance": True, "json_value": {"version": "2.0"},
             "metadata": {
