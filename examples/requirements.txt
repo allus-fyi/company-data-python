@@ -8,8 +8,8 @@
 # from inside an installed package (where .. is site-packages, not a project root, so an
 # `-e ..` line could never resolve). See _sdk_requirement().
 #
-#   - Authlib: a standard, well-known OIDC client for the identity OIDC scenarios
-#     (5/6, a compliance demo). Supports discovery, PKCE S256, client_secret_post,
+#   - Authlib: a standard, well-known OIDC client for the identity OIDC scenario
+#     (5, a compliance demo). Supports discovery, PKCE S256, client_secret_post,
 #     issuer override, and id_token verification — sessionless, exactly what the demo
 #     needs. Declared here only; never a dependency of the published SDK.
 #   - requests: the examples inject a small network-timeout Session into the SDK's

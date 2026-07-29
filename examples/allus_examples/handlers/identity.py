@@ -1,7 +1,7 @@
-"""Identity scenario handlers (contract family: ids ``1``–``8``).
+"""Identity scenario handlers (contract family: ids ``1``-``5``, ``7``-``8``).
 
-The eight *Sign in with allme* / OIDC / service-2FA scenarios, each mapped to the
-INTENDED allus SDK surface (or Authlib for the OIDC scenarios 5/6). Handlers never
+The seven *Sign in with allme* / OIDC / service-2FA scenarios, each mapped to the
+INTENDED allus SDK surface (or Authlib for the OIDC scenario 5). Handlers never
 perform raw platform HTTP and never block on the SDK's long defaults: detached /
 challenge waits are short-cycled (``timeout=2``) inside ``run()``.
 
@@ -42,15 +42,15 @@ from ..runtime import Runtime, add_call
 # id -> "runnable" | "guide". Scenario 7 is the one guide card (no /start).
 SCENARIOS: Dict[int, str] = {
     1: "runnable", 2: "runnable", 3: "runnable", 4: "runnable",
-    5: "runnable", 6: "runnable", 7: "guide", 8: "runnable",
+    5: "runnable", 7: "guide", 8: "runnable",
 }
 SERVICE_SCENARIOS = (4, 8)      # also read live values via the service data Client
 OAUTH_URL_SCENARIOS = (1, 2, 3, 4, 8)  # build a consent URL via OAuthClient
 # Scenarios whose complete_sign_in() response can carry claim values (userinfo "values"
 # non-empty) and therefore need the OAuth app private key configured to decrypt them: mode
 # one_time and mode connect, both delivered as app-key ciphertext through userinfo. Mode signin
-# (scenarios 1, 2) never carries values; scenario 8 never calls this leg at all; scenarios 5/6
-# run Authlib instead of this SDK's decrypt path.
+# (scenarios 1, 2) never carries values; scenario 8 never calls this leg at all; scenario 5
+# runs Authlib instead of this SDK's decrypt path.
 CLAIM_VALUE_SCENARIOS = (3, 4)
 
 DEFAULT_API_URL = "https://api.allme.fyi"
@@ -292,7 +292,7 @@ class IdentityHandlers:
             self.rt.write_run(run_id, run)
             return json_response({"runId": run_id, "action": {"type": "detached", "url": url}})
 
-        if scenario_id in (5, 6):  # OIDC login / continue-on-phone
+        if scenario_id == 5:  # OIDC login
             verifier, _challenge = pkce.generate()
             nonce = self.rt.new_run_id()
             run["verifier"] = verifier
@@ -364,7 +364,7 @@ class IdentityHandlers:
                 run["calls"] = add_call(run.get("calls"), CALL_ENROLLED_CALLBACK)
             elif query_one(query, "code"):
                 code = query_one(query, "code")
-                if scenario_id in (5, 6):
+                if scenario_id == 5:
                     run = self._complete_oidc(run, code)
                 else:
                     run = self._complete_signin(run, code)

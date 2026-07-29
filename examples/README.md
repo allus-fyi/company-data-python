@@ -125,7 +125,7 @@ Open a family's handler file and you see the SDK calls directly:
 | Sign in — detached (id 2) | identity.py | `authorize_url(response_mode='detached')` → `poll_result` → `complete_sign_in` |
 | One-time claims (id 3) | identity.py | `authorize_url('one_time', claims=…)` → `complete_sign_in` (decrypts with the app private key) |
 | Connect (id 4) | identity.py | `authorize_url('connect', …)` → `complete_sign_in`, then `Client.connections` for live values |
-| OIDC login / continue-on-phone (ids 5, 6) | identity.py + `allus_examples/oidc.py` | **Authlib** `OAuth2Session.create_authorization_url` → `fetch_token` → `jwt.decode` (id_token verify) |
+| OIDC login (id 5) | identity.py + `allus_examples/oidc.py` | **Authlib** `OAuth2Session.create_authorization_url` → `fetch_token` → `jwt.decode` (id_token verify) |
 | 2FA at consent — **guide** card (id 7) | — | no `/start`; a checklist linking to scenarios 1 & 5 |
 | Standalone service-2FA + enrollment (id 8) | identity.py | `Client.two_factor.challenge` → `wait_for_result`; `/enroll` → `authorize_url('2fa_enroll', …)` |
 | Run a contract flow (`flow:run`) | `allus_examples/handlers/flow.py` | `identity` / `trigger_flow_run` / `flow_run` / `process_flow_run` / `flow_run_answers` / `flow_run_document` |
