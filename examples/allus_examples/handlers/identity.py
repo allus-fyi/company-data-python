@@ -54,7 +54,7 @@ DEFAULT_API_URL = "https://api.allme.fyi"
 # network timeout. The SDK's poll helpers separately bound their LOGICAL loop.
 POLL_TIMEOUT_S = 2.0
 
-# Refusal when the request carries no Host header, so the browser's origin is unknown (#574).
+# Refusal when the request carries no Host header, so the browser's origin is unknown.
 # There is NO default host: substituting one (localhost) silently sends the round-trip to a
 # DIFFERENT origin than the browser is on — a different localStorage and a redirect URI the
 # OAuth app never registered.
@@ -70,14 +70,13 @@ NO_STORED_ORIGIN = (
     "from the browser you will complete the sign-in in."
 )
 
-# ── the "what just happened" trace (#578) ─────────────────────────────────────
+# ── the "what just happened" trace ────────────────────────────────────────────
 # Every entry is ``<SDK method> — <what that call did in THIS scenario>``, appended AT
 # the call site, in the order the calls were made; an entry wrapped in parentheses is a
-# step that is deliberately NOT an SDK call. The annotations are byte-identical in all
-# six SDK examples — only the method reference is written in the language's own idiom —
-# so one scenario teaches one thing whichever example a reader starts. Keep them in step
-# when this handler changes: the panel is headed "What just happened", and a list that no
-# longer matches the code is worse than a short one.
+# step that is deliberately NOT an SDK call. These annotations follow a shared teaching
+# format so one scenario teaches one thing whichever example a reader starts. Keep them
+# in step when this handler changes: the panel is headed "What just happened", and a list
+# that no longer matches the code is worse than a short one.
 CALL_IDW_BUILD = (
     "OAuthClient.from_config — builds the RP client from the saved config file: "
     "client id, secret and the registered redirect URI"
@@ -176,7 +175,7 @@ CALL_OIDC_VERIFY = (
 
 class IdentityHandlers:
     """The identity family, bound to the shared runtime. The OAuth redirect URI is derived
-    from each request's own Host header — never from the server's port (#574)."""
+    from each request's own Host header — never from the server's port."""
 
     def __init__(self, rt: Runtime) -> None:
         self.rt = rt
@@ -197,7 +196,7 @@ class IdentityHandlers:
     ) -> Response:
         if SCENARIOS.get(scenario_id) != "runnable":
             return json_response({"error": "not_found"}, 404)
-        # The redirect URI is derived from THIS request's origin and from nothing else (#574).
+        # The redirect URI is derived from THIS request's origin and from nothing else.
         # Refuse rather than invent a host: the suite renders this sentence on Save.
         if not _request_host(headers):
             return json_response({"error": NO_ORIGIN}, 400)
@@ -495,12 +494,12 @@ class IdentityHandlers:
     def _uses_default_authorize_base(self, scenario_id: int) -> bool:
         """Whether ``_oauth_client_for`` takes the named-constructor branch. The SAME predicate
         decides the client AND the trace entry, so the panel can never name a constructor that did
-        not run (#578) — the local-stack option really does build the client a different way."""
+        not run — the local-stack option really does build the client a different way."""
         base = str(self.rt.read_config_meta(scenario_id).get("authorize_base") or "")
         return not base or base == DEFAULT_AUTHORIZE_URL
 
     def _idw_build_call(self, scenario_id: int) -> str:
-        """The trace entry for the OAuth client ``_oauth_client_for`` just built (#578)."""
+        """The trace entry for the OAuth client ``_oauth_client_for`` just built."""
         return CALL_IDW_BUILD if self._uses_default_authorize_base(scenario_id) else CALL_IDW_BUILD_LOCAL
 
     def _service_client_for(self, scenario_id: int, poll_timeout: Optional[float] = None) -> Client:
@@ -515,7 +514,7 @@ class IdentityHandlers:
 
         cfg = self.rt.load_config(scenario_id)
         # The SAME value the authorize URL carried, so the two legs of the exchange cannot
-        # diverge. An absent record is a loud failure, never a substituted host (#574).
+        # diverge. An absent record is a loud failure, never a substituted host.
         redirect_uri = str(cfg.get("oauth_redirect_uri") or "")
         if not redirect_uri:
             raise ValueError(NO_STORED_ORIGIN)
@@ -528,9 +527,9 @@ class IdentityHandlers:
 
     def _redirect_uri(self, headers: Optional[Dict[str, str]]) -> str:
         """The registered redirect URI: ``http://{host}/callback``, host = the origin the browser
-        actually used (#553). The server binds all interfaces, so a phone on the LAN saves ITS
+        actually used. The server binds all interfaces, so a phone on the LAN saves ITS
         origin into the config file and the OAuth round-trip returns to the phone, not to the
-        phone's own localhost. Never falls back to a hardcoded host (#574) — ``127.0.0.1`` and
+        phone's own localhost. Never falls back to a hardcoded host — ``127.0.0.1`` and
         ``localhost`` are DIFFERENT origins for redirect matching and for browser storage alike,
         so a substituted default drops the developer on an origin whose localStorage never held
         the setup and whose URI the OAuth app never registered."""
@@ -560,7 +559,7 @@ def _claims(data: Dict[str, Any]) -> List[str]:
 
 
 def _claim_objects(types: List[Any]) -> List[Claim]:
-    # #498: a claim carries a mandatory, unique `name` — the key `values` and `attestations` come
+    # A claim carries a mandatory, unique `name` — the key `values` and `attestations` come
     # back under. The demo's config lists claim TYPES, so the type doubles as the name here; a real
     # integration usually names them for its own domain ("billing_email").
     return [Claim(name=str(t), type=str(t)) for t in types]

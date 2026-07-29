@@ -1,4 +1,4 @@
-"""#311 verified fields — the SDK's automatic verified: bool on decrypted values."""
+"""Verified fields — the SDK's automatic verified: bool on decrypted values."""
 import hashlib
 from allus_company_data.models import Value, Change
 

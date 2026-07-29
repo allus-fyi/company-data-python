@@ -143,7 +143,7 @@ class HttpClient:
     def get_response(self, path: str) -> "requests.Response":
         """GET returning the whole 2xx response — status, headers AND raw body, no parse.
 
-        #590: the company-facing binary file endpoints have two 200 shapes (a JSON
+        The company-facing binary file endpoints have two 200 shapes (a JSON
         wrapper for an encrypted answer, raw file bytes for a plaintext one) that are
         told apart by ``Content-Type``, and both carry an ``X-Allus-Content-Sha256``
         digest header. Neither :meth:`get` (which parses) nor :meth:`get_raw` (which
@@ -246,7 +246,7 @@ class HttpClient:
 
             if status == 429:
                 error_key, message, details = _extract_error(resp)
-                # #481: a pending-cap 429 means the caller already holds the maximum concurrent
+                # A pending-cap 429 means the caller already holds the maximum concurrent
                 # 2FA challenges — a retry can never clear that, so surface it immediately as an
                 # ApiError instead of the blind Retry-After backoff every other 429 gets.
                 if error_key == "twofa.pending_cap":
@@ -271,7 +271,7 @@ class HttpClient:
     def wants_xml(self) -> bool:
         """True when this client is configured to speak XML (``config.format``).
 
-        Public since #590 so a caller that reads a response itself
+        Public so a caller that reads a response itself
         (:meth:`get_response`) can still parse its body the way every other endpoint
         is parsed.
         """
@@ -305,7 +305,7 @@ def _extract_error(
 ) -> tuple[Optional[str], Optional[str], dict]:
     """Pull ``error_key`` + a message + the remaining fields out of a non-2xx body.
 
-    #590: everything BESIDE the key and the message travels on as ``details``, so a
+    Everything BESIDE the key and the message travels on as ``details``, so a
     body that carries actionable data (a 410 ``company_data.file_expired``'s
     ``content_sha256`` + ``expired_at``) is readable without a bespoke exception type
     per response.

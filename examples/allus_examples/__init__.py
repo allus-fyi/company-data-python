@@ -10,6 +10,6 @@ all three scenario families:
 Shared scaffolding (runtime state, launcher, router, bundle fetch+verify, contract
 guard, port guard, config-file model, run store, clear) lives at the package root;
 each family's SCENARIO HANDLERS — which ARE the SDK example — live under
-``handlers/``. Its own sub-project — not separately published, but since #493 its
+``handlers/``. Its own sub-project — not separately published, but its
 source ships INSIDE the published SDK package (both the wheel and the sdist), so an
 installing developer gets a runnable suite."""

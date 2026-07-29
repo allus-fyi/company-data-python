@@ -58,13 +58,12 @@ DEFAULT_API_URL = "https://api.allme.fyi"
 # timeout on its SDK session keeps a blackholed feed from pinning the single worker.
 FEED_TIMEOUT_S = 3.0
 
-# ── the "what just happened" trace (#578) ─────────────────────────────────────
+# ── the "what just happened" trace ────────────────────────────────────────────
 # Every entry is ``<SDK method> — <what that call did in THIS scenario>``, appended AT
 # the call site, in the order the calls were made; an entry wrapped in parentheses is a
-# step that is deliberately NOT an SDK call. The annotations are byte-identical in all
-# six SDK examples — only the method reference is written in the language's own idiom —
-# so one scenario teaches one thing whichever example a reader starts. Keep them in step
-# when this handler changes.
+# step that is deliberately NOT an SDK call. These annotations follow a shared teaching
+# format so one scenario teaches one thing whichever example a reader starts. Keep them
+# in step when this handler changes.
 CALL_SERVICE_BUILD = (
     "Client.from_config — builds the SERVICE-role data client from the saved config file: "
     "client credentials plus the service private key, decrypted with its passphrase"
@@ -269,7 +268,7 @@ class CompanyDataHandlers:
         return {"events": events, "drained": True}
 
     # companydata:documents — Client.create_document() for each of the six document/contract types
-    # (payloads verbatim from apitests/php/documents.php). The per-person / private / contract types
+    # (payloads match a known-good reference fixture set). The per-person / private / contract types
     # target the connected person by share code (from the setup sidecar).
     def _do_documents(self, client: Client, calls: List[str]) -> Dict[str, Any]:
         share_code = str(self.rt.read_config_meta(DOCUMENTS).get("share_code") or "")
@@ -422,8 +421,9 @@ class CompanyDataHandlers:
 
 def _project_change(c, source: Optional[str]) -> Dict[str, Any]:
     """The rendered-column projection of a Change PLUS a raw object holding the full public Change
-    fields, so the frontend's JSON.stringify(result) Raw view can show the event-specific extras.
-    ``source`` labels a webhook delivery vs a pull-feed row (None for the changes scenario)."""
+    fields, so a raw/detailed view of the response can still show the event-specific extras beyond
+    the compact columns. ``source`` labels a webhook delivery vs a pull-feed row (None for the
+    changes scenario)."""
     event: Dict[str, Any] = {
         "event": c.event,
         "personId": c.person_id,
@@ -484,7 +484,7 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt is not None else None
 
 
-# ── the six document/contract specs (payloads verbatim from apitests/php/documents.php) ─────────
+# ── the six document/contract specs (payloads match a known-good reference fixture set) ─────────
 
 
 def _document_specs() -> List[Dict[str, Any]]:
@@ -525,7 +525,7 @@ def _document_specs() -> List[Dict[str, Any]]:
 
 
 def _minimal_pdf(label: str) -> bytes:
-    """A tiny valid one-page PDF carrying ``label`` (verbatim shape from apitests/php/documents.php)
+    """A tiny valid one-page PDF carrying ``label`` (a known-good reference shape)
     — so the broadcast/per-person/contract file docs upload real bytes without a fixture file."""
     safe = label.replace("(", "[").replace(")", "]")
     stream = f"BT /F1 18 Tf 40 90 Td ({safe}) Tj ET"

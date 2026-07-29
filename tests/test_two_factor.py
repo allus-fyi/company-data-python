@@ -1,4 +1,4 @@
-"""#481 additions to the 2FA client: wait_for_result (the base challenge/result client landed via #436)."""
+"""Additions to the 2FA client: wait_for_result (built over the base challenge/result client)."""
 
 import pytest
 

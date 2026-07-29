@@ -1,4 +1,4 @@
-"""``Sign in with allme`` RP OAuth client tests (#195)."""
+"""``Sign in with allme`` RP OAuth client tests."""
 
 import json
 import os
@@ -104,7 +104,7 @@ def test_authorize_url_pkce_and_detached():
 
 def test_authorize_url_claims_validation():
     c = OAuthClient(_cfg())
-    # #498: every claim carries a mandatory `name` — the identity everything downstream is keyed by.
+    # Every claim carries a mandatory `name` — the identity everything downstream is keyed by.
     claims = [
         Claim("email", "email", suggest="email_personal"),
         Claim("avatar", "photo"),        # binary → dropped
@@ -120,7 +120,7 @@ def test_authorize_url_claims_validation():
 
 
 def test_authorize_url_claim_name_required():
-    """#498 §2: a nameless claim, and two sharing a name, are refused at the call that made them."""
+    """A nameless claim, and two sharing a name, are refused at the call that made them."""
     c = OAuthClient(_cfg())
     with pytest.raises(ConfigError):
         c.authorize_url("one_time", claims=[Claim("", "email")])
@@ -129,7 +129,7 @@ def test_authorize_url_claim_name_required():
 
 
 def test_authorize_url_claim_verified():
-    """#498 §3: `verified` travels on the wire, so an RP can demand a #311-attested answer."""
+    """`verified` travels on the wire, so an RP can demand an attested answer."""
     c = OAuthClient(_cfg())
     _, q = _parse_url(c.authorize_url("signin", claims=[Claim("email", "email", verified=True)]))
     parsed = json.loads(q["claims"])
@@ -161,7 +161,7 @@ def test_exchange_and_userinfo():
     assert s.posts[0]["data"]["grant_type"] == "authorization_code"
     assert s.posts[0]["data"]["code_verifier"] == "V"
     info = c.userinfo("AT")
-    # #498 §5: `sub` IS the share code (byte-identical to the id_token's); display_name is gone.
+    # `sub` IS the share code (byte-identical to the id_token's); `user` carries no display_name.
     assert info["sub"] == "AB12CD"
     assert info["sub"] == info["share_code"]
     assert "display_name" not in info
@@ -185,7 +185,7 @@ def test_complete_sign_in_decrypts_values(tmp_path):
     assert out["mode"] == "one_time"
     assert out["two_factor"] is True
     assert out["user"]["sub"] == "AB12CD"
-    # #498 §3.1a: no `values_attestation` on the wire → "not attested", never "wrong".
+    # No `values_attestation` on the wire → "not attested", never "wrong".
     assert out["attestations"] == {}
     assert out["values"]["email_personal"] == vec["text"]["plaintext"]
 
@@ -210,7 +210,7 @@ def test_poll_result_expired_raises():
     assert ei.value.status == 410
 
 
-# ── #481: 2fa_enroll mode + detached enrollment poll delivery ──────────────
+# ── 2fa_enroll mode + detached enrollment poll delivery ────────────────────
 
 def test_authorize_url_accepts_2fa_enroll_mode():
     c = OAuthClient(_cfg())
@@ -220,7 +220,7 @@ def test_authorize_url_accepts_2fa_enroll_mode():
 
 
 def test_poll_result_pending_then_enrolled():
-    # #481: a detached 2fa_enroll delivers {enrolled: true, state}, NOT a code. poll_result must
+    # A detached 2fa_enroll delivers {enrolled: true, state}, NOT a code. poll_result must
     # return on the `enrolled` sentinel — otherwise it consumes the one-shot result and times out.
     s = FakeSession()
     s.queue_post(FakeResp(202), FakeResp(200, {"enrolled": True, "state": "EN1"}))

@@ -31,7 +31,7 @@ How it is wired (the "everything else the SDK hides"):
   slug→type map types every value (so ``address`` parses to a dict, ``photo``
   becomes a lazy binary handle, etc.).
 * **Binary** — a value's ``BinaryHandle.bytes()`` GETs the slot file endpoint and
-  returns the file bytes whichever of the endpoint's two 200 shapes arrives (#590):
+  returns the file bytes whichever of the endpoint's two 200 shapes arrives:
   an ``{"encrypted":true,"value":<wrapper>}`` envelope runs the same service-key
   decrypt, while a plaintext answer's body already IS the file. The shapes are told
   apart on ``Content-Type`` in ``_binary_fetch``.
@@ -130,14 +130,13 @@ class Client:
         self._request_fields: Optional[List[RequestField]] = None
         self._type_by_slug: dict[str, Optional[str]] = {}
 
-        # #436 2FA-by-allme — the relying-party challenge API, lazily built.
+        # 2FA-by-allme — the relying-party challenge API, lazily built.
         self._two_factor: Optional["TwoFactorClient"] = None
 
         # Recipient RSA public keys (by share_code) — cached for per-person document
         # encryption. A public key is immutable + not a secret (fetched live, never configured).
         self._pubkey_cache: dict[str, Any] = {}
-        # #344 review pass 1 (after the budget reset): a per-key GENERATION counter plus a real
-        # LOCK, bumped/held by every invalidation.
+        # A per-key GENERATION counter plus a real LOCK, bumped/held by every invalidation.
         #
         # The fetch path is check -> HTTP -> store, and ``invalidate_public_key`` -- which the
         # README tells webhook consumers to call from their own handler -- may run in that window
@@ -175,7 +174,7 @@ class Client:
     def _binary_fetch(self, value_url: str) -> BinaryFetchResult:
         """Fetch a company-facing binary file endpoint and classify its response.
 
-        #590 — the endpoint has TWO 200 shapes and which one arrives is not the
+        The endpoint has TWO 200 shapes and which one arrives is not the
         company's to predict: a person whose source field is PRIVATE yields
         ``application/json`` ``{"encrypted":true,"value":<wrapper>}``, a person whose
         field is not yields the file's own Content-Type and the bytes themselves. The
@@ -243,7 +242,7 @@ class Client:
 
     @property
     def two_factor(self) -> "TwoFactorClient":
-        """#436 2FA-by-allme — the relying-party challenge API (``two_factor.challenge`` / ``.result``)."""
+        """2FA-by-allme — the relying-party challenge API (``two_factor.challenge`` / ``.result``)."""
         if self._two_factor is None:
             from .two_factor import TwoFactorClient
 
@@ -378,7 +377,7 @@ class Client:
         return [o for o in items if isinstance(o, dict)]
 
     def invalidate_public_key(self, share_code: str) -> None:
-        """Drop a person's cached RSA public key, by share code (#344).
+        """Drop a person's cached RSA public key, by share code.
 
         A public key is immutable, so caching one is safe until the person rotates it. Persons
         learn about a rotation from a silent push; a SERVICE receives no pushes at all, so without
@@ -397,9 +396,9 @@ class Client:
 
     def _decrypt_change(self, event: dict) -> Change:
         """The pump's decrypt: a raw event dict → a typed :class:`Change` (value at delivery)."""
-        # #344: the feed is a service's only rotation signal. Deliberately eventual — nothing
+        # The feed is a service's only rotation signal. Deliberately eventual — nothing
         # rejects a document encrypted to a stale key, so a window remains until this is drained.
-        # #344: the pull feed names it `event`; a raw webhook body names it `action` (and on
+        # The pull feed names it `event`; a raw webhook body names it `action` (and on
         # document rows `action` carries signed|accepted|cancelled instead) - so match either key.
         if "key_rotated" in (event.get("event"), event.get("action")):
             share_code = event.get("share_code")
@@ -608,15 +607,16 @@ class Client:
             if per_person:
                 # EVERY per-person file doc is E2E-encrypted: wrap the file envelope string,
                 # encrypt it for the recipient, then POST {"value": "<wrapper JSON string>"}.
-                # The /file endpoint requires `value` to be a STRING (isValidEncryptedBlob),
-                # so the wrapper dict is json.dumps'd; the bare wrapper was rejected (400).
+                # The /file endpoint requires `value` to be a STRING, so the wrapper dict is
+                # json.dumps'd — a bare dict wrapper is rejected (400).
                 envelope = json.dumps({"file": _data_uri(file_bytes, file_mime)})
                 wrapper = encrypt_for_public_key(envelope, pubkey)
                 self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
                                 json_body={"value": json.dumps(wrapper)})
             else:
                 # Broadcast — plaintext: POST {"file": "<base64 data URI>", "original_name"}.
-                # The API rejected the old raw-bytes body (documents.invalid_payload: file required).
+                # A raw-bytes body is rejected (documents.invalid_payload: file required); the
+                # file must travel as a data URI.
                 self._http.post(f"{_DOCUMENTS}/{doc.id}/file",
                                 json_body={"file": _data_uri(file_bytes, file_mime),
                                            "original_name": _broadcast_original_name(file_name, name, file_mime)})
@@ -645,7 +645,7 @@ class Client:
         return Document.from_api(_doc_obj(body), decrypt_value=self._decrypt_value)
 
     def document_file(self, document_id: str) -> bytes:
-        """#491 gap 2: download a document's file BYTES. :meth:`document` returns
+        """Download a document's file BYTES. :meth:`document` returns
         metadata only. This GETs ``/documents/{id}/file`` (via
         :meth:`~allus_company_data.http.HttpClient.get_raw`, no JSON parse) and
         branches on the document's storage mode (server contract):
@@ -750,7 +750,7 @@ class Client:
         return FlowRun.from_api(self._http.get(f"{_FLOW_RUNS}/{run_id}"))
 
     def flow_run_answers(self, run) -> dict:
-        """#491 gap 1: a completed run's DECRYPTED answers as ``{slug: plaintext}``.
+        """A completed run's DECRYPTED answers as ``{slug: plaintext}``.
 
         Accepts a :class:`FlowRun` or a run id (fetched via :meth:`flow_run`). The
         public accessor for a finished run's answers; the private
@@ -762,7 +762,7 @@ class Client:
         return self._decrypt_run_answers(flow_run)
 
     def flow_run_document(self, run_id: str) -> bytes:
-        """#491 gap 2: download the company's OWN copy of a run's generated flow
+        """Download the company's OWN copy of a run's generated flow
         contract — the PLAINTEXT file bytes. GETs ``/flow-runs/{run_id}/document/file``,
         which serves the company-party copy encrypted to the SERVICE key (unlike
         :meth:`document_file`'s recipient-targeted copy), so the same
@@ -777,7 +777,7 @@ class Client:
         ).bytes()
 
     def identity(self) -> dict:
-        """#491 gap 3: this client's OWN identity — ``{"company_user_id": ..., "service_id": ...}``
+        """This client's OWN identity — ``{"company_user_id": ..., "service_id": ...}``
         from ``GET /api/company-data/whoami``. The COMPANY party of a
         :meth:`trigger_flow_run` binding must bind to ``company_user_id`` (the person
         party's user_id comes from the connection), so without this the company-side
@@ -856,7 +856,7 @@ class Client:
         answers_out = []
         for slug, val in fill.items():
             plain = val if isinstance(val, str) else json.dumps(val)
-            # #302: validate the plaintext against the field's declared type (resolved
+            # Validate the plaintext against the field's declared type (resolved
             # from the pinned flow definition) before it is encrypted. A slug with no
             # field element in the graph resolves to None → skipped (do not invent a type).
             ftype = _flow_field_type(run.definition, slug)

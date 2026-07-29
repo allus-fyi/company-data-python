@@ -1,4 +1,4 @@
-"""The runnable allus SDK example suite, shipped inside the installed package (#493).
+"""The runnable allus SDK example suite, shipped inside the installed package.
 
 This file exists so the top-level ``examples/`` tree can be mapped into the wheel as
 ``allus_company_data.examples`` (see pyproject.toml). The suite itself is an ordinary

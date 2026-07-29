@@ -14,7 +14,7 @@ Covered:
 * connections() is a LAZY generator yielding typed Connections with decrypted,
   slug-keyed values; it auto-pages and stops on a short page;
 * a binary value is a lazy BinaryHandle whose .bytes() GETs the slot endpoint and
-  serves the file bytes from EITHER 200 shape (#590): the encrypted
+  serves the file bytes from EITHER 200 shape: the encrypted
   {"encrypted":true,"value":...} → decrypt → the vector's inner bytes, or a plaintext
   answer's raw bytes under the file's own Content-Type (with its digest header);
   and a 410 file_expired carries content_sha256/expired_at on ApiError.details;
@@ -86,7 +86,7 @@ class FakeResponse:
         elif json_body is not None:
             self.text = json.dumps(json_body)
         elif content is not None:
-            # #590: a plaintext binary answer is bytes that need not be valid text at
+            # A plaintext binary answer is bytes that need not be valid text at
             # all; keep .text best-effort so the double stays usable either way.
             self.text = content.decode("utf-8", "replace")
         else:
@@ -331,7 +331,7 @@ def test_binary_handle_fetches_slot_and_decrypts(config, vector):
 
 
 def test_binary_handle_serves_plaintext_bytes(config):
-    """#590 — a plaintext source field serves the FILE BYTES under the file's own
+    """A plaintext source field serves the FILE BYTES under the file's own
     Content-Type. The handle returns them as-is (no decrypt, no envelope) and exposes
     the platform's X-Allus-Content-Sha256 digest for the bytes it received."""
     page = {
@@ -369,7 +369,7 @@ def test_binary_handle_serves_plaintext_bytes(config):
 
 
 def test_binary_fetch_parses_encrypted_shape_in_xml_mode(vector, pem_path, tmp_path):
-    """#590 — an XML-configured client speaks XML on every other endpoint and must not
+    """An XML-configured client speaks XML on every other endpoint and must not
     silently lose it on this one: the encrypted shape goes through the client's own
     parser, not a hard-coded JSON decode."""
     cfg = Config(
@@ -401,7 +401,7 @@ def test_binary_fetch_parses_encrypted_shape_in_xml_mode(vector, pem_path, tmp_p
 
 
 def test_binary_handle_expired_answer_carries_digest(config):
-    """#590 — a 410 file_expired surfaces the digest and the expiry date through
+    """A 410 file_expired surfaces the digest and the expiry date through
     ApiError.details (generic, not a bespoke exception type)."""
     page = {
         "total": 1,

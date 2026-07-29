@@ -1,4 +1,4 @@
-"""Pure port of the platform ``FlowConditionEvaluator`` (A-spec §4).
+"""Pure port of the platform's flow condition evaluation semantics (A-spec §4).
 
 A condition is one of:
 
@@ -24,8 +24,9 @@ Frozen semantics (pinned by ``contract-flow-condition-vector.json``):
   (one numeric, one not) → ``False``.
 * ``and`` over ``[]`` → ``True``; ``or`` over ``[]`` → ``False``.
 
-This is the single source of routing / show-if / option-availability across
-web, iOS, Android, the PHP reference, and every SDK language.
+This is the Python implementation of the shared routing / show-if /
+option-availability contract, pinned by test vectors so every implementation
+agrees byte-for-byte.
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ def evaluate(condition: Any, answers: Mapping[str, Any]) -> bool:
         return isinstance(target, list) and any(_loose_eq(x, val) for x in target)
     if op == "nin":
         return not (isinstance(target, list) and any(_loose_eq(x, val) for x in target))
-    # #102 substring ops (text): contains needs an answer (like in); not_contains is true
+    # Substring ops (text): contains needs an answer (like in); not_contains is true
     # when unanswered (like nin). Case-sensitive; empty needle counts as contained.
     if op == "contains":
         return _answered(val) and _str(target) in _str(val)
@@ -125,9 +126,8 @@ def _str(v: Any) -> str:
     return str(v)
 
 
-# ── Flow constants (computed variables) — issue #79 ──────────────────────────
-# Pure port of the platform ``computeConstants`` / ``evalExpr`` (canonical JS
-# reference in the web evaluator). ``compute_constants`` materialises each
+# ── Flow constants (computed variables) ──────────────────────────────────────
+# Pure port of the platform's constant-computation semantics. ``compute_constants`` materialises each
 # constant into a NEW slug→value map (answers + {key: value}) in dependency
 # order, so a condition leaf {field: <constKey>} resolves through the unchanged
 # ``evaluate`` above. ``None`` propagates: an unresolved operand yields

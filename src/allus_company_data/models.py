@@ -52,8 +52,8 @@ DecryptValue = Callable[[Any], str]
 # A type resolver: slug -> the request field's type (e.g. "email", "photo").
 TypeForSlug = Callable[[str], Optional[str]]
 # A binary fetch callable: takes the slot-keyed value_url and returns the CLASSIFIED
-# response (#590 — the file endpoint has an encrypted and a plaintext 200 shape, and
-# only the caller of the HTTP layer can see the Content-Type that tells them apart).
+# response — the file endpoint has an encrypted and a plaintext 200 shape, and
+# only the caller of the HTTP layer can see the Content-Type that tells them apart.
 BinaryFetch = Callable[[str], BinaryFetchResult]
 
 
@@ -100,7 +100,7 @@ class RequestField:
     one_time: bool
     mandatory: bool
     # Which customer TYPE this request row applies to: "person" | "company" | "both"
-    # (B2B, #163). Absent on an older API → None (treat as "person").
+    # (B2B). Absent on an older API → None (treat as "person").
     audience: Optional[str] = None
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -130,7 +130,7 @@ class RequestField:
 
 
 def _verified_from(obj: dict, plaintext) -> bool:
-    """#311: recompute the verified flag from the just-decrypted plaintext (email str only)."""
+    """Recompute the verified flag from the just-decrypted plaintext (email str only)."""
     if not isinstance(plaintext, str):
         return False
     vhash = obj.get("verified_hash")
@@ -153,7 +153,7 @@ class Value:
     value: Any
     live: bool
     updated_at: Optional[datetime] = None
-    verified: bool = False  # #311: True iff the value carries verified metadata AND the hash matches
+    verified: bool = False  # True iff the value carries verified metadata AND the hash matches
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -246,7 +246,7 @@ class Connection:
     display_name: Optional[str]
     connected_at: Optional[datetime]
     values: Dict[str, Value] = field(default_factory=dict)
-    # The connected customer's TYPE: "person" | "company" (B2B, #163). Absent on an
+    # The connected customer's TYPE: "person" | "company" (B2B). Absent on an
     # older API → None (treat as "person"). ``person_id`` keeps its name (the wire
     # field ``person_user_id``) but semantically holds the customer's user id.
     customer_type: Optional[str] = None
@@ -327,7 +327,7 @@ class Change:
     event: str
     person_id: Optional[str]
     share_code: Optional[str] = None  # the person's profile share code (every event; may be null)
-    customer_type: Optional[str] = None  # "person" | "company" (B2B, #163); absent on older API → None
+    customer_type: Optional[str] = None  # "person" | "company" (B2B); absent on older API → None
     slug: Optional[str] = None
     value: Any = None
     live: Optional[bool] = None
@@ -340,8 +340,8 @@ class Change:
     signed_at: Optional[str] = None    # set on a signature: ISO timestamp the signature was recorded
     cancel_effective_date: Optional[str] = None  # set on a cancelled document_status_changed: ISO date the cancellation takes effect
     request_id: Optional[str] = None   # set on connection_request_accepted | connection_request_rejected
-    public_key_sha256: Optional[str] = None  # #344: set on key_rotated — SHA-256 fingerprint of the person's NEW public key
-    verified: bool = False  # #311: True iff a field_updated value is verified (hash matches the decrypted plaintext)
+    public_key_sha256: Optional[str] = None  # set on key_rotated — SHA-256 fingerprint of the person's NEW public key
+    verified: bool = False  # True iff a field_updated value is verified (hash matches the decrypted plaintext)
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -381,7 +381,7 @@ class Change:
             value=value,
             live=live,
             document_id=obj.get("document_id"),
-            # #436: 2fa_challenge_completed carries the outcome in `status` (approved|denied|revoked);
+            # 2fa_challenge_completed carries the outcome in `status` (approved|denied|revoked);
             # its challenge_id/completed_at stay in `raw`. The poll is the record (spec §3).
             status=obj.get("status")
             if event in ("document_status_changed", "2fa_challenge_completed")

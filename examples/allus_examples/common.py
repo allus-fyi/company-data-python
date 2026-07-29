@@ -47,15 +47,14 @@ def json_response(data: Any, status: int = 200) -> Response:
 def failure_response(
     reason: Any, token: str = "server_error", status: int = 500
 ) -> Response:
-    """The contract's FAILURE envelope (#583): ``{"error": "<token> — <reason>", "message": <reason>}``.
+    """The contract's FAILURE envelope: ``{"error": "<token> — <reason>", "message": <reason>}``.
 
-    The suite's shared client raises ``body.error`` VERBATIM and ignores every other key
-    (``api.js``: ``throw new Error(body.error || 'start failed (…)')``), so a bare token in
-    ``error`` reaches the developer as one uninformative word and the REASON — which the
-    backend has right there — is dropped. That is the swallowed failure of standards.html §9:
-    a failure converted into something indistinguishable from any other failure. The token is
+    The suite's shared frontend client raises the ``error`` value VERBATIM and ignores every
+    other key, so a bare token in ``error`` reaches the developer as one uninformative word and
+    the REASON — which the backend has right there — is dropped: a failure converted into
+    something indistinguishable from any other failure. The token is
     kept and the reason appended in the shape this contract already uses for exactly this
-    (``no_origin — …``, #574); ``message`` keeps the bare reason for a programmatic reader.
+    (``no_origin — …``); ``message`` keeps the bare reason for a programmatic reader.
 
     ``reason`` may be an exception or a sentence. An exception with an EMPTY ``str()``
     (``KeyError()``, a bare ``RuntimeError()``) would otherwise report nothing at all, so its

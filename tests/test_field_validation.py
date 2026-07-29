@@ -1,8 +1,7 @@
 """Field-type value validation parity — every case in the shared vector must pass.
 
-The same ``contract-field-validation-vector.json`` pins the web reference
-(``frontend/src/fieldValidation.js``) and the iOS / Android / SDK ports; this
-asserts the Python port agrees case-for-case.
+The same ``contract-field-validation-vector.json`` pins the shared
+cross-implementation contract; this asserts the Python port agrees case-for-case.
 """
 
 import json

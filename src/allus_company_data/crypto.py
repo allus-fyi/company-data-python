@@ -217,7 +217,7 @@ class BinaryFetchResult:
     """One response from a company-facing binary file endpoint, in the shape a
     :class:`BinaryHandle` needs.
 
-    #590 — the route has TWO 200 shapes and the company cannot predict which it will
+    The route has TWO 200 shapes and the company cannot predict which it will
     get, because the answer depends on whether the person's source field is private,
     which is theirs to change:
 
@@ -236,9 +236,9 @@ class BinaryFetchResult:
     exactly these bytes, present on both shapes — so a consumer can record what it
     received and later prove its archived copy has not drifted.
 
-    The file bytes ride on ``data`` rather than on a field named ``bytes`` (the name
-    the other SDKs use): ``bytes`` is the builtin this module annotates with, and
-    shadowing it inside the class body is a trap for the next reader for no gain.
+    The file bytes ride on ``data`` rather than on a field named ``bytes``:
+    ``bytes`` is the builtin this module annotates with, and shadowing it inside
+    the class body is a trap for the next reader for no gain.
     """
 
     encrypted: bool
@@ -256,7 +256,7 @@ class BinaryHandle:
     ``.save()`` GET that URL and return the FILE BYTES either way — the caller never
     has to know which of the two response shapes arrived.
 
-    #590 — THERE ARE TWO SHAPES, AND WHICH ONE ARRIVES IS THE PERSON'S CHOICE, NOT
+    THERE ARE TWO SHAPES, AND WHICH ONE ARRIVES IS THE PERSON'S CHOICE, NOT
     THE COMPANY'S. Whether the person's source field is private decides it, they can
     change it at any time, and nothing in the API announces it in advance:
 
@@ -413,7 +413,7 @@ class BinaryHandle:
     def bytes(self) -> bytes:
         """Fetch (if needed), decrypt, and return the decoded primary file bytes.
 
-        #590: a plaintext-shaped answer short-circuits here — its body already IS the
+        A plaintext-shaped answer short-circuits here — its body already IS the
         file, so there is no envelope to parse and no service key to apply.
         """
         if self._plain_bytes is not None:
@@ -453,7 +453,7 @@ class BinaryHandle:
 
 
 def hash_matches(salt: str, expected_hash: str, plaintext: str) -> bool:
-    """#311 verified fields: True iff sha256(salt ‖ plaintext) == expected_hash (hex).
+    """Verified fields: True iff sha256(salt ‖ plaintext) == expected_hash (hex).
 
     Consumers recompute this from the plaintext they just decrypted and trust the
     verified flag ONLY on a match — a substituted/drifted value renders unverified.

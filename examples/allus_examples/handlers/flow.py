@@ -47,12 +47,11 @@ PARTY_CUSTOMER = "customer"
 INVALID_EMAIL = "not-an-email"
 
 
-# ── the "what just happened" trace (#578) ─────────────────────────────────────
+# ── the "what just happened" trace ────────────────────────────────────────────
 # Every entry is ``<SDK method> — <what that call did in THIS scenario>``, appended AT
-# the call site, in the order the calls were made. The annotations are byte-identical in
-# all six SDK examples — only the method reference is written in the language's own idiom
-# — so one scenario teaches one thing whichever example a reader starts. Keep them in
-# step when this handler changes.
+# the call site, in the order the calls were made. These annotations follow a shared
+# teaching format so one scenario teaches one thing whichever example a reader starts.
+# Keep them in step when this handler changes.
 CALL_SERVICE_BUILD = (
     "Client.from_config — builds the SERVICE-role data client from the saved config file: "
     "client credentials plus the service private key, decrypted with its passphrase"

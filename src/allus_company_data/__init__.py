@@ -55,11 +55,11 @@ from .webhooks import handle_webhook, parse_webhook, verify_webhook
 __all__ = [
     # client facade — the main entry point
     "Client",
-    # customer role (b2b, #168)
+    # customer role (b2b)
     "CustomerClient",
     "CustomerConnection",
     "CustomerServiceLink",
-    # 2FA-by-allme (#436)
+    # 2FA-by-allme
     "TwoFactorClient",
     "TwoFactorChallenge",
     "TwoFactorResult",
@@ -71,7 +71,7 @@ __all__ = [
     "decrypt",
     "encrypt_for_public_key",
     "BinaryHandle",
-    # #590: what a custom `binary_fetch` must return (the two 200 shapes of the
+    # What a custom `binary_fetch` must return (the two 200 shapes of the
     # company-facing file endpoint).
     "BinaryFetchResult",
     # errors
@@ -82,7 +82,7 @@ __all__ = [
     "WebhookError",
     "RateLimitError",
     "ValidationError",
-    # field-type value validation (#302) + country helpers (#303)
+    # field-type value validation + country helpers
     "is_field_value_valid",
     "field_value_error",
     "is_valid_country_code",
@@ -97,11 +97,11 @@ __all__ = [
     "Document",
     "FlowRun",
     "LogEntry",
-    # "Sign in with allme" — RP-side OAuth (#195)
+    # "Sign in with allme" — RP-side OAuth
     "OAuthClient",
     "Attestation",
     "Claim",
-    # contract-flow condition evaluator + computed constants (issue #79)
+    # contract-flow condition evaluator + computed constants
     "evaluate",
     "eval_expr",
     "compute_constants",

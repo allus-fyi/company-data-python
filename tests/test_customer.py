@@ -1,4 +1,4 @@
-"""CustomerClient (b2b, #168) — parse + method-shape + key-sourcing tests.
+"""CustomerClient (b2b) — parse + method-shape + key-sourcing tests.
 
 Reuses the shared decryption vector's PEM as the customer ACCOUNT key (the vector
 is UNCHANGED — only read). No sign/accept surface is asserted (spec D6).

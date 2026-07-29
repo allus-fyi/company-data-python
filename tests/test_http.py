@@ -236,7 +236,7 @@ def test_429_exhausts_retries_then_raises_rate_limit_error(tmp_path):
 
 
 def test_429_pending_cap_surfaces_immediately_without_retry(tmp_path):
-    # #481: a twofa.pending_cap 429 can never be cleared by a retry — it must surface at once
+    # A twofa.pending_cap 429 can never be cleared by a retry — it must surface at once
     # as ApiError, NOT go through the Retry-After backoff (which every other 429 gets).
     s = FakeSession()
     s.post_responses = [_token_ok()]

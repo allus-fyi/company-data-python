@@ -1,4 +1,4 @@
-"""The CUSTOMER-role client (#168).
+"""The CUSTOMER-role client.
 
 ``CustomerClient`` is what a *connecting company* uses to consume and answer
 another company's service over its ``acct_*`` credentials: list its company↔company
@@ -75,8 +75,7 @@ class CustomerClient:
         # ACCOUNT private key — decrypts received documents/flow copies. Loaded once.
         self._account_key = _webhooks.load_account_key(config)
         self._pubkey_cache: dict[str, Any] = {}
-        # #344 review pass 1 (after the budget reset): a per-key GENERATION counter plus a real
-        # LOCK, bumped/held by every invalidation.
+        # A per-key GENERATION counter plus a real LOCK, bumped/held by every invalidation.
         #
         # The fetch path is check -> HTTP -> store, and ``invalidate_public_key`` -- which the
         # README tells webhook consumers to call from their own handler -- may run in that window
@@ -93,14 +92,14 @@ class CustomerClient:
         self._pubkey_gen: dict[str, int] = {}
         self._pubkey_lock = threading.Lock()
         self._service_key_cache: dict[str, Any] = {}
-        # #411: the SERVICE key cache now has an invalidator too (``invalidate_service_key``,
-        # driven by the ``service_key_rotated`` change), so it needs the same generation counter
-        # and lock, for exactly the reason spelled out above — a separate lock so a person-key
+        # The SERVICE key cache has an invalidator too (``invalidate_service_key``, driven by
+        # the ``service_key_rotated`` change), so it needs the same generation counter and
+        # lock, for exactly the reason spelled out above — a separate lock so a person-key
         # fetch and a service-key fetch never serialise on each other.
         self._service_key_gen: dict[str, int] = {}
         self._service_key_lock = threading.Lock()
-        # requestTypeCache: "companyCode/serviceCode" → {request_field_id: field_type},
-        # resolved from the connect-screen lookup for typed-answer validation (#302).
+        # _request_type_cache: "company_code/service_code" → {request_field_id: field_type},
+        # resolved from the connect-screen lookup for typed-answer validation.
         self._request_type_cache: dict[str, dict[str, str]] = {}
         self._pump: Optional[Pump] = None
 
@@ -267,7 +266,7 @@ class CustomerClient:
         return [o for o in items if isinstance(o, dict)]
 
     def invalidate_public_key(self, user_id: str) -> None:
-        """Drop a person's cached RSA public key, by user id (#344).
+        """Drop a person's cached RSA public key, by user id.
 
         See :meth:`Client.invalidate_public_key`; the changes feed calls this for you, webhook
         consumers must call it themselves.
@@ -278,7 +277,7 @@ class CustomerClient:
             self._pubkey_gen[user_id] = self._pubkey_gen.get(user_id, 0) + 1
 
     def invalidate_service_key(self, company_code: str, service_code: str) -> None:
-        """Drop a SERVICE's cached RSA public key (#411).
+        """Drop a SERVICE's cached RSA public key.
 
         The mirror of :meth:`invalidate_public_key` in the service→customer direction: the next
         answer or document encrypted to that service refetches its key. The changes feed calls this
@@ -295,15 +294,15 @@ class CustomerClient:
         # Customer events are self-describing (about a company/service); there is
         # no person slug catalog, and any encrypted value is account-key material.
         #
-        # #344: this cache also stores a negative (None) result, so without invalidation a person
+        # This cache also stores a negative (None) result, so without invalidation a person
         # who had not generated keys yet would stay unresolvable for the process lifetime too.
-        # #344: the pull feed names it `event`; a raw webhook body names it `action` (and on
+        # The pull feed names it `event`; a raw webhook body names it `action` (and on
         # document rows `action` carries signed|accepted|cancelled instead) - so match either key.
         if "key_rotated" in (event.get("event"), event.get("action")):
             person_id = event.get("person_user_id") or event.get("person_id")
             if isinstance(person_id, str) and person_id:
                 self.invalidate_public_key(person_id)
-        # #411: a service this customer connects to replaced its keypair — drop the cached copy so
+        # A service this customer connects to replaced its keypair — drop the cached copy so
         # the next encryption refetches. Same either-key match as above.
         if "service_key_rotated" in (event.get("event"), event.get("action")):
             company_code = event.get("company_share_code")
@@ -358,7 +357,7 @@ class CustomerClient:
     def _request_field_types(self, company_code: str, service_code: str) -> dict[str, str]:
         """Resolve ``{request_field_id: field_type}`` for a service from the connect-screen
         lookup, cached per company/service. Best-effort — a lookup failure yields an empty
-        map so typed-answer validation is simply skipped (#302)."""
+        map so typed-answer validation is simply skipped."""
         key = f"{company_code}/{service_code}"
         cached = self._request_type_cache.get(key)
         if cached is not None:
@@ -383,7 +382,7 @@ class CustomerClient:
         pub = self._service_key(company_code, service_code)
         if pub is None:
             raise ConfigError(f"no service key for {company_code}/{service_code}")
-        # #302: validate each typed answer against its request row's field type BEFORE
+        # Validate each typed answer against its request row's field type BEFORE
         # encryption. The type is resolved server-side from the connect-screen lookup
         # (cached per service); an answer whose type can't be resolved is skipped —
         # never invent one.
@@ -412,7 +411,7 @@ class CustomerClient:
         body = self._http.get(f"{_KEYS}/{company_code}/{service_code}")
         spki = body.get("public_key") if isinstance(body, dict) else None
         loaded = load_public_key(spki) if spki else None
-        # #411: store ONLY if no invalidation happened while the request was in flight. The compare
+        # Store ONLY if no invalidation happened while the request was in flight. The compare
         # and the assignment must be one critical section — see the note on the lock above.
         with self._service_key_lock:
             if self._service_key_gen.get(key, 0) == gen:

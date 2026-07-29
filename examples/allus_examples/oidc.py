@@ -1,6 +1,6 @@
 """Scenarios 5 & 6 — standard OIDC login via a REAL third-party OIDC client.
 
-This is the #314 compliance demo: the point is that the identity leg goes through
+This is a compliance demo: the point is that the identity leg goes through
 an actual, well-known OIDC library rather than the allus SDK's bespoke OAuth
 helper. We use **Authlib** (``authlib.integrations.requests_client.OAuth2Session``
 + ``authlib.jose`` for id_token verification). Authlib is declared ONLY in this

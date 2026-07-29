@@ -1,4 +1,4 @@
-"""``Sign in with allme`` — the RP-side OAuth client (#195).
+"""``Sign in with allme`` — the RP-side OAuth client.
 
 A third-party site ("relying party") embeds a *Sign in with allme* button, sends the
 person to the hosted consent screen, and — once the person approves — receives an
@@ -41,11 +41,11 @@ _RESPONSE_MODES = frozenset({"redirect", "detached"})
 
 @dataclass
 class Claim:
-    """A claim the relying party asks for — a REQUEST FIELD (#498).
+    """A claim the relying party asks for — a REQUEST FIELD.
 
     You describe what you need: a ``name`` (the claim's identity on the wire), a field
     ``type``, an advisory ``suggest``ion, whether it is ``required``, and whether only a
-    #311-``verified`` answer will do. You never name one of the person's fields — THEY
+    ``verified`` answer will do. You never name one of the person's fields — THEY
     decide which of theirs answers it.
 
     ``name`` is MANDATORY and must be unique within one request: everything downstream is
@@ -53,8 +53,8 @@ class Claim:
     ``attestations`` maps :meth:`OAuthClient.complete_sign_in` returns). Two claims sharing
     a name are rejected rather than silently coalesced.
 
-    ``verified`` is accepted only where it can be honoured (#498 §3.1b): on the OIDC flow,
-    and only for a type #311 can attest (v1: ``email``). Sending it on a ``one_time``
+    ``verified`` is accepted only where it can be honoured: on the OIDC flow,
+    and only for a type that can be attested (v1: ``email``). Sending it on a ``one_time``
     request is refused with ``invalid_request`` — that leg carries no source row id, so the
     server could neither enforce the requirement nor attest it, and an unhonourable
     requirement is refused rather than quietly dropped.
@@ -65,14 +65,14 @@ class Claim:
     type: str
     suggest: Optional[str] = None
     required: bool = False
-    #: Only a #311-verified answer satisfies this claim. OIDC flow + verifiable types only.
+    #: Only a verified answer satisfies this claim. OIDC flow + verifiable types only.
     verified: bool = False
     label: Optional[str] = None
 
 
 @dataclass
 class Attestation:
-    """#498 §3.1a — proof that a delivered value is the #311-verified one.
+    """Proof that a delivered value is the verified one.
 
     Present only for a ``verified`` claim under ENCRYPTED delivery. The server builds and
     seals this against your app key — a client-supplied attestation is never accepted — so
@@ -177,7 +177,7 @@ class OAuthClient:
         for c in claims:
             if not c.type or c.type in _NON_CLAIMABLE:
                 continue
-            # #498 §2: `name` is the claim's identity and it is mandatory. Refused HERE rather
+            # `name` is the claim's identity and it is mandatory. Refused HERE rather
             # than left to the API, so the integration error surfaces at the call that made it.
             name = (c.name or "").strip()
             if not name:
@@ -243,14 +243,14 @@ class OAuthClient:
         config (oauth_private_key + oauth_key_passphrase) — required only when values are
         present.
 
-        #498 §5: ``user["sub"]`` IS the person's SHARE CODE and is byte-identical to the
-        id_token's ``sub``; ``share_code`` is retained beside it and now simply equals it.
-        ``display_name`` is GONE — it is a consented ``name`` claim now, or nothing: ask for
-        ``Claim(name="name", type="text")`` and read ``values["name"]``.
+        ``user["sub"]`` IS the person's SHARE CODE and is byte-identical to the
+        id_token's ``sub``; ``share_code`` is retained beside it and simply equals it.
+        ``display_name`` is not a field of ``user`` — it is a consented ``name`` claim, or
+        nothing: ask for ``Claim(name="name", type="text")`` and read ``values["name"]``.
 
-        #498 §3.1a: ``attestations`` is an ADDITIVE sibling map keyed by the SAME claim name
+        ``attestations`` is an ADDITIVE sibling map keyed by the SAME claim name
         as ``values``, present only for a ``verified`` claim under ENCRYPTED delivery. An
-        integration that never reads it behaves exactly as before.
+        integration that never reads it is unaffected.
         """
         token = self.exchange_code(code, code_verifier)
         access_token = token.get("access_token")
@@ -276,7 +276,7 @@ class OAuthClient:
     def _decrypt_attestations(
         self, raw_attest: dict, values: Dict[str, str]
     ) -> Dict[str, Attestation]:
-        """#498 §3.1a — open the app-key-sealed attestations and attest each value ourselves.
+        """Open the app-key-sealed attestations and attest each value ourselves.
 
         A SECOND decrypt per verified claim: ``values`` is byte-identical to before, but each
         attestation is its own ``{"_enc":1,...}`` object. A passthrough accessor handing back
@@ -335,7 +335,7 @@ class OAuthClient:
 
         Loops on HTTP 202 (pending) until the terminal body arrives — a detached sign-in
         returns ``{code, state}``; a detached ``2fa_enroll`` returns ``{enrolled: true, state}``
-        (#481) — the result expires (410 → :class:`ApiError`), or ``timeout`` seconds elapse
+        — the result expires (410 → :class:`ApiError`), or ``timeout`` seconds elapse
         (:class:`ApiError`). Returns on the first delivered shape (``code`` OR ``enrolled``) and
         never polls past it, so a one-shot enrollment result is not consumed and lost.
         """
@@ -352,7 +352,7 @@ class OAuthClient:
             status = resp.status_code
             if status == 200:
                 body = self._json(resp)
-                # #481: return on the first delivered terminal shape — a sign-in ``code`` OR a
+                # Return on the first delivered terminal shape — a sign-in ``code`` OR a
                 # ``2fa_enroll`` ``enrolled`` sentinel ({enrolled: true, state}). Both are one-shot;
                 # returning here (rather than looping) is what keeps an enrollment result from being
                 # consumed and lost to a timeout.

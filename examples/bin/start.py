@@ -10,7 +10,7 @@ under that venv — ONE server serving all three scenario families on one port. 
 present venv is reused (nothing is reinstalled).
 
 The examples' third-party deps live in ``requirements.txt`` — their OWN manifest, so
-Authlib never becomes a dependency OF the SDK distribution. Since #493 the example
+Authlib never becomes a dependency OF the SDK distribution. The example
 SOURCE does ship inside the installed ``allus-company-data`` artifact (mapped in as
 ``allus_company_data.examples``): the suite stays a separate runnable project, it is
 just carried along by the parent package rather than published on its own. That is why
@@ -34,9 +34,9 @@ SDK_ROOT = os.path.dirname(BASE)
 
 
 def _sdk_requirement():
-    """How to install the SDK, decided by where this suite is actually running (#493).
+    """How to install the SDK, decided by where this suite is actually running.
 
-    Since #493 the example SOURCE ships inside the installed allus-company-data
+    The example SOURCE ships inside the installed allus-company-data
     artifact, so this launcher runs in two very different places:
 
     * a repository CHECKOUT — ``..`` is the SDK project root (it has a
@@ -80,7 +80,7 @@ def main() -> None:
         subprocess.check_call(
             [py, "-m", "pip", "install", "-q", "-r", "requirements.txt"], cwd=BASE
         )
-        # The SDK itself, resolved by context — see _sdk_requirement() (#493).
+        # The SDK itself, resolved by context — see _sdk_requirement().
         subprocess.check_call(
             [py, "-m", "pip", "install", "-q", *_sdk_requirement()], cwd=BASE
         )

@@ -25,7 +25,7 @@ dev = [
 Homepage = "https://github.com/allus-fyi/company-data-python"
 Repository = "https://github.com/allus-fyi/company-data-python"
 
-# The library package lives under src/. Since #493 the example suite ships INSIDE the
+# The library package lives under src/. The example suite ships INSIDE the
 # installed artifact too: `pip install` normally resolves the WHEEL, so grafting the
 # examples into the sdist via MANIFEST.in alone is not enough — the top-level examples/
 # tree is mapped into the package as `allus_company_data.examples` and its files ride

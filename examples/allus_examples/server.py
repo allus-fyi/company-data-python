@@ -39,7 +39,7 @@ class Server:
         self.sdk_version = sdk_version
         # The three families share the ONE runtime. The server's port is deliberately NOT passed
         # on: the OAuth redirect URI comes from each request's own Host header, never from a host
-        # synthesised out of the port (#574).
+        # synthesised out of the port.
         self.identity = IdentityHandlers(rt)
         self.flow = FlowHandlers(rt)
         self.company = CompanyDataHandlers(rt)
@@ -47,7 +47,7 @@ class Server:
     # ── entry point ──────────────────────────────────────────────────────────
 
     def dispatch(self, method: str, raw_path: str, body: bytes, headers: Dict[str, str]) -> Response:
-        # EVERYTHING is inside the guard — request PREPROCESSING included (#583 review pass 1). Setup
+        # EVERYTHING is inside the guard — request PREPROCESSING included. Setup
         # and parsing throw as readily as a handler does (``ensure_dirs()`` on an unwritable
         # ``.runtime/``, ``urlparse`` on a malformed target), and preprocessing placed ABOVE the try
         # escaped to the launcher — which, unlike this method, has no envelope to answer with.
@@ -84,7 +84,7 @@ class Server:
                 return json_response({"error": "not_found"}, 404)
             return self._serve_static(path)
         except Exception as exc:  # noqa: BLE001 — top-level guard, mirrors PHP
-            # The reason rides in `error`, because that is the only key the suite renders (#583).
+            # The reason rides in `error`, because that is the only key the suite renders.
             return failure_response(exc)
 
     # ── GET /api/meta (aggregated across all three families) ───────────────────
@@ -110,7 +110,7 @@ class Server:
         owns ``scenario_id`` (ints -> identity, flow:* -> flow, companydata:* -> company).
 
         ``headers`` reaches identity's config handler only: it derives the OAuth redirect URI
-        from the origin the browser used, so a phone on the LAN registers its own (#553)."""
+        from the origin the browser used, so a phone on the LAN registers its own."""
         family = _family_for_id(scenario_id)
 
         if family == "identity":

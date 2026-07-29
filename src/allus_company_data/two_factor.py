@@ -1,4 +1,4 @@
-"""#436 2FA-by-allme — the relying-party challenge API (spec §3).
+"""2FA-by-allme — the relying-party challenge API (spec §3).
 
 On the SERVICE's data-client credentials (the same auth :class:`Client` uses). A service asks a person
 (by ``share_code``) to approve a login inside the allme app, then polls for the outcome. The poll is the
@@ -94,7 +94,7 @@ class TwoFactorClient:
         """Poll :meth:`result` until the status is terminal (no longer ``pending``) and return that
         first terminal :class:`TwoFactorResult`.
 
-        Convenience over a manual :meth:`result` loop (#481; mirrors the §12c ``poll_result``
+        Convenience over a manual :meth:`result` loop (mirrors the §12c ``poll_result``
         precedent). Because the first terminal read burns the challenge, this returns as soon as the
         status leaves ``pending`` — it never re-reads a consumed result. Raises :class:`ApiError` if
         ``timeout`` seconds elapse while still pending; ``interval`` is the seconds between polls.

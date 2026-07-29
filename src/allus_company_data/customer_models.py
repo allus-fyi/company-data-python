@@ -1,4 +1,4 @@
-"""Customer-role output models (#168).
+"""Customer-role output models.
 
 A CUSTOMER is the connecting company consuming/answering another company's
 service. Its ``GET /api/company-connections`` payload has a different shape from

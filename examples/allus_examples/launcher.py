@@ -13,7 +13,7 @@ ONE server, ONE port, all three scenario families. Runs INSIDE the example's ven
 5. serve with ``http.server.HTTPServer`` — ONE worker (serves one request at a time;
    no threading), so requests serialize (incl. the public POST /webhook) — bound to
    ALL interfaces (``0.0.0.0``) so a phone on the same network can reach it, printing
-   every URL it is reachable on (#553).
+   every URL it is reachable on.
 """
 
 from __future__ import annotations
@@ -143,11 +143,11 @@ def _make_handler(server: Server):
         def _handle(self) -> None:
             # Last-resort net BEHIND Server.dispatch()'s own guard, through the SAME
             # ``failure_response`` helper so this process has exactly ONE failure envelope
-            # (#583 review pass 1, standards §1). Without it an escaping exception reaches
-            # ``BaseHTTPRequestHandler``, which answers NOTHING AT ALL — measured, the client raises
+            # (standards §1). Without it an escaping exception reaches
+            # ``BaseHTTPRequestHandler``, which answers NOTHING AT ALL — the client raises
             # ``RemoteDisconnected: Remote end closed connection without response`` — so the suite has
             # no ``error`` to render and prints its ``start failed ({id})`` fallback. That is the same
-            # bodiless-500 defect #583 fixed in C#, reached one layer further out.
+            # bodiless-500 defect this outer guard exists to close, reached one layer further out.
             try:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length) if length else b""
@@ -201,7 +201,7 @@ def main() -> None:
 
     rt = Runtime(BASE_DIR)
     srv = Server(rt, frontend, _sdk_version())
-    # ALL interfaces, so a phone on the same network can reach it (#553).
+    # ALL interfaces, so a phone on the same network can reach it.
     httpd = HTTPServer(("0.0.0.0", port), _make_handler(srv))
     _print_reachable_urls(port)
     try:
@@ -215,7 +215,7 @@ def main() -> None:
 
 
 def _print_reachable_urls(port: int) -> None:
-    """Announce every URL the server is reachable on (#553).
+    """Announce every URL the server is reachable on.
 
     The server binds all interfaces, so a phone on the same network can reach it — but
     only if the person holding the phone knows which address to type. Print the loopback
@@ -244,10 +244,8 @@ def _lan_addresses() -> list:
 
     IPv4 only — an IPv6 literal is not what anyone types into a phone.
 
-    This ENUMERATES the interfaces (POSIX ``getifaddrs(3)`` via ctypes), which is what the
-    other five SDKs get from their platform libraries (``net_get_interfaces``,
-    ``os.networkInterfaces``, ``net.Interfaces``, ``NetworkInterface.*``). Python's stdlib
-    has no interface API, and the two obvious substitutes are both WRONG here: a UDP route
+    This ENUMERATES the interfaces (POSIX ``getifaddrs(3)`` via ctypes) because Python's
+    stdlib has no interface API, and the two obvious substitutes are both WRONG here: a UDP route
     probe returns the ONE source address for one destination, and ``getaddrinfo(gethostname())``
     returns whatever the hostname resolves to. On a laptop with Wi-Fi plus a VPN or a docker
     bridge each yields a single address — and not necessarily the one the phone can reach.

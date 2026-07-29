@@ -122,7 +122,7 @@ def test_request_field_coerces_xml_bool_strings():
 
 
 def test_request_field_includes_audience():
-    """B2B (#163): a request row carries its audience; absent → None (older API)."""
+    """B2B: a request row carries its audience; absent → None (older API)."""
     body = {"request_fields": [
         {"slug": "billing", "label": "Billing", "type": "email",
          "one_time": False, "mandatory_provide": False, "mandatory_connected": False,
@@ -220,7 +220,7 @@ def test_connection_detail_typed_slug_keyed(vector, decrypt_value, encrypt_for_k
 def test_binary_handle_lazy_fetch_and_decrypt(vector, decrypt_value):
     """The lazy handle's .bytes() goes value_url → fetch → decrypt → envelope →
     inner bytes, reproducing the shared vector's binary hash."""
-    # #590: the fetch callback classifies the response. Here it reports the ENCRYPTED
+    # The fetch callback classifies the response. Here it reports the ENCRYPTED
     # shape — what the route serves when the person's source field is private (the
     # client unwraps {"encrypted":true,"value":...} to this wrapper).
     captured = {}
@@ -393,7 +393,7 @@ def test_change_includes_share_code(decrypt_value):
 
 
 def test_change_includes_customer_type(decrypt_value):
-    """B2B (#163): a change event carries the customer_type; absent → None."""
+    """B2B: a change event carries the customer_type; absent → None."""
     body = {"changes": [
         {"id": "chg-1", "event": "connection_created",
          "person_user_id": "co-1", "customer_type": "company",
@@ -409,7 +409,7 @@ def test_change_includes_customer_type(decrypt_value):
 
 
 def test_connection_includes_customer_type_and_share_code(decrypt_value):
-    """B2B (#163): a connection carries customer_type + share_code (both nullable)."""
+    """B2B: a connection carries customer_type + share_code (both nullable)."""
     from allus_company_data.models import Connection
 
     obj = {"connection_id": "c-1", "user_id": "co-9",

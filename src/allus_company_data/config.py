@@ -31,13 +31,13 @@ _ENV_MAP = {
     "client_secret": "ALLUS_CLIENT_SECRET",
     "service_private_key": "ALLUS_SERVICE_PRIVATE_KEY",
     "key_passphrase": "ALLUS_KEY_PASSPHRASE",
-    # Customer role (B2B, #168): the acct_* client pair the connecting company
+    # Customer role (B2B): the acct_* client pair the connecting company
     # authenticates with. Distinct from the per-service (client_id/secret) pair.
     "customer_client_id": "ALLUS_CUSTOMER_CLIENT_ID",
     "customer_client_secret": "ALLUS_CUSTOMER_CLIENT_SECRET",
     "account_private_key": "ALLUS_ACCOUNT_PRIVATE_KEY",
     "account_passphrase": "ALLUS_ACCOUNT_PASSPHRASE",
-    # "Sign in with allme" idw role (#195): the idw_* app the RP embeds. oauth_private_key +
+    # "Sign in with allme" idw role: the idw_* app the RP embeds. oauth_private_key +
     # oauth_key_passphrase are only needed to DECRYPT one_time claim values (config-only keys).
     "oauth_client_id": "ALLUS_OAUTH_CLIENT_ID",
     "oauth_redirect_uri": "ALLUS_OAUTH_REDIRECT_URI",
@@ -61,7 +61,7 @@ _REQUIRED = (
     "key_passphrase",
 )
 
-# Customer role (#168): the acct_* pair + the account key that decrypts received
+# Customer role: the acct_* pair + the account key that decrypts received
 # documents/flow copies. No service PEM — a customer never decrypts a person's field.
 _REQUIRED_CUSTOMER = (
     "api_url",
@@ -70,7 +70,7 @@ _REQUIRED_CUSTOMER = (
     "account_private_key",
 )
 
-# "Sign in with allme" idw role (#195): only the client id + redirect are required. A secret is
+# "Sign in with allme" idw role: only the client id + redirect are required. A secret is
 # needed for confidential apps; the private key + passphrase are needed only to decrypt one_time
 # claim values (checked lazily by OAuthClient.complete_sign_in, not here).
 _REQUIRED_IDW = (
@@ -94,7 +94,7 @@ class Config:
     service_private_key: Optional[str] = None  # path to the OpenSSL-encrypted PKCS#8 PEM
     key_passphrase: Optional[str] = None       # decrypts the service PEM in memory
 
-    # Customer role (#168): the acct_* client pair the connecting company uses.
+    # Customer role: the acct_* client pair the connecting company uses.
     customer_client_id: Optional[str] = None
     customer_client_secret: Optional[str] = None
 
@@ -102,7 +102,7 @@ class Config:
     account_private_key: Optional[str] = None
     account_passphrase: Optional[str] = None
 
-    # "Sign in with allme" idw role (#195). The idw_* app the RP embeds. oauth_private_key is the
+    # "Sign in with allme" idw role. The idw_* app the RP embeds. oauth_private_key is the
     # path to the app's OpenSSL-encrypted PKCS#8 PEM; oauth_key_passphrase decrypts it in memory —
     # both only needed to read one_time claim values (config-only key handling, as everywhere).
     oauth_client_id: Optional[str] = None
@@ -159,7 +159,7 @@ class Config:
 
     @classmethod
     def from_customer_file(cls, path: str) -> "Config":
-        """Load a CUSTOMER-role config (#168) — requires the acct_* pair + account key,
+        """Load a CUSTOMER-role config — requires the acct_* pair + account key,
         not the service PEM. Env vars override file values."""
         return cls._build(cls._load_json(path), role="customer")
 
@@ -170,7 +170,7 @@ class Config:
 
     @classmethod
     def from_idw_file(cls, path: str) -> "Config":
-        """Load an IDW-role config (#195, "Sign in with allme") from a JSON file — requires the
+        """Load an IDW-role config ("Sign in with allme") from a JSON file — requires the
         oauth_client_id + oauth_redirect_uri; env vars override file values."""
         return cls._build(cls._load_json(path), role="idw")
 

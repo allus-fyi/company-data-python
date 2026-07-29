@@ -1,7 +1,7 @@
 """Flow-constants parity — every case in the shared constants vector must pass.
 
-The same ``contract-flow-constants-vector.json`` pins the JS reference and the
-web / iOS / Android / PHP ports; this asserts the Python ``compute_constants``
+The same ``contract-flow-constants-vector.json`` pins the shared
+cross-implementation contract; this asserts the Python ``compute_constants``
 port agrees byte-for-byte. Sibling of ``test_flow_condition.py``.
 """
 

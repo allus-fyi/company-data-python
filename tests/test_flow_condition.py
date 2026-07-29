@@ -1,7 +1,7 @@
-"""FlowConditionEvaluator parity — every case in the shared vector must pass.
+"""Condition-evaluator parity — every case in the shared vector must pass.
 
-The same ``contract-flow-condition-vector.json`` pins the PHP reference and the
-web / iOS / Android ports; this asserts the Python port agrees byte-for-byte.
+The same ``contract-flow-condition-vector.json`` pins the shared
+cross-implementation contract; this asserts the Python port agrees byte-for-byte.
 """
 
 import json

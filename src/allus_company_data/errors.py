@@ -55,7 +55,7 @@ class ApiError(Exception):
     provided one), a human-readable ``message``, and ``details`` — the error body's
     remaining fields, verbatim.
 
-    #590 added the first response that carries actionable data BESIDE the key: a 410
+    Some responses carry actionable data BESIDE the key: a 410
     ``company_data.file_expired`` returns the expired answer's ``content_sha256`` and
     ``expired_at``, so a consumer can record that its archived copy is now the only
     one and still prove what it holds. Generic rather than a bespoke subclass — every
@@ -87,7 +87,7 @@ class WebhookError(Exception):
 
 
 class ValidationError(Exception):
-    """A submitted value failed field-type validation (#302) before encryption.
+    """A submitted value failed field-type validation before encryption.
 
     Carries the offending field ``slug`` and its ``field_type`` so the caller can
     point at the bad answer without shipping malformed ciphertext.

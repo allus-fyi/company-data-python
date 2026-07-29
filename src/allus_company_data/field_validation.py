@@ -1,7 +1,7 @@
-"""Shared field-type value validation (#302).
+"""Shared field-type value validation.
 
-Pure + i18n-free port of the web reference ``frontend/src/fieldValidation.js``,
-kept byte-aligned across web / allus / iOS / Android / the 6 SDKs by
+Pure + i18n-free field-type validation, kept byte-aligned with the shared
+cross-implementation contract by
 ``testdata/contract-field-validation-vector.json``. Spec:
 ``docs/superpowers/specs/2026-07-15-field-type-validation-design.html``.
 
@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 from .country_data import COUNTRY_CODES, DIAL_CODES, US_STATE_CODES
 
-# #303: country/nationality store an ISO 3166-1 alpha-2 code; address state = USPS 2-letter code.
+# country/nationality store an ISO 3166-1 alpha-2 code; address state = USPS 2-letter code.
 # The code lists come from the generated country data (do NOT inline them — they would rot).
 _COUNTRY_CODE_SET = frozenset(COUNTRY_CODES)
 _US_STATE_CODE_SET = frozenset(US_STATE_CODES)
@@ -210,12 +210,12 @@ def field_value_error(field_type: Optional[str], value: Any) -> Optional[str]:
 
 
 def is_valid_country_code(code: Optional[str]) -> bool:
-    """True if ``code`` is an assigned ISO 3166-1 alpha-2 country code (#303)."""
+    """True if ``code`` is an assigned ISO 3166-1 alpha-2 country code."""
     return code in _COUNTRY_CODE_SET
 
 
 def dial_code_for(code: Optional[str]) -> Optional[str]:
-    """The ITU E.164 dial code (digits only, no ``+``) for a country code, or ``None`` (#303)."""
+    """The ITU E.164 dial code (digits only, no ``+``) for a country code, or ``None``."""
     return DIAL_CODES.get(code or "")
 
 
