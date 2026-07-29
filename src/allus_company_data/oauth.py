@@ -181,9 +181,9 @@ class OAuthClient:
             # than left to the API, so the integration error surfaces at the call that made it.
             name = (c.name or "").strip()
             if not name:
-                raise ConfigError("every claim must carry a `name` (#498)")
+                raise ConfigError("every claim must carry a `name`")
             if name in seen:
-                raise ConfigError(f"duplicate claim name {name!r} (#498)")
+                raise ConfigError(f"duplicate claim name {name!r}")
             seen.add(name)
             entry: Dict[str, Any] = {"name": name, "type": c.type}
             if c.suggest:
