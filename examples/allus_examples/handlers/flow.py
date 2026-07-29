@@ -20,12 +20,13 @@ phone resumes automatically).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from allus_company_data import (
     ApiError,
     Client,
     ConfigError,
+    Connection,
     ValidationError,
 )
 
@@ -56,13 +57,17 @@ CALL_SERVICE_BUILD = (
     "Client.from_config — builds the SERVICE-role data client from the saved config file: "
     "client credentials plus the service private key, decrypted with its passphrase"
 )
+CALL_REQUEST_FIELDS = (
+    "Client.request_fields — resolves the flow name + published version (the only handle the "
+    "portal ever shows for it) to its flow id"
+)
 CALL_IDENTITY = (
     "Client.identity — GET /api/company-data/whoami: this service's own company_user_id, "
     "which the COMPANY party binds to"
 )
-CALL_CONNECTION = (
-    "Client.connection — reads the configured connection; the connected person's id on it is "
-    "what the CUSTOMER party binds to"
+CALL_CONNECTIONS = (
+    "Client.connections — resolves the person's own share code to the connection whose id the "
+    "CUSTOMER party binds to"
 )
 CALL_TRIGGER = (
     "Client.trigger_flow_run — starts a run of the published flow for that connection, pinning "
@@ -105,9 +110,11 @@ class FlowHandlers:
 
     def config(self, scenario_id: str, body: bytes) -> Response:
         """Write the browser's setup values to a canonical SDK config FILE (service
-        role — client_credentials + service PEM). The demo-only run parameters
-        (published flow id, connection id, fixture choice) go to the meta sidecar so
-        the config file stays a pure SDK config the run executes off."""
+        role — client_credentials + service PEM). The demo-only run parameters (flow
+        name + published version, the person's share code, fixture choice) go to the
+        meta sidecar so the config file stays a pure SDK config the run executes off.
+        Neither the flow id nor the connection id is ever collected here — ``start()``
+        resolves both via the SDK instead of taking either as a raw database id."""
         if not self.is_scenario(scenario_id):
             return json_response({"error": "not_found"}, 404)
         data = parse_body(body)
@@ -125,8 +132,9 @@ class FlowHandlers:
 
         # Demo-only run parameters (NOT SDK Config fields) -> meta sidecar.
         self.rt.write_config_meta(STORE_KEY, {
-            "flow_id": str(data.get("flowId") or ""),
-            "connection_id": str(data.get("connectionId") or ""),
+            "flow_name": str(data.get("flowName") or ""),
+            "flow_version": str(data.get("flowVersion") or ""),
+            "share_code": str(data.get("shareCode") or ""),
             "fixture": str(data.get("fixture") or ""),
         })
 
@@ -136,7 +144,9 @@ class FlowHandlers:
 
     def start(self, scenario_id: str) -> Response:
         """Trigger the flow run. Build the service Client from the persisted config
-        file, construct the bindings via the intended SDK surface (company ->
+        file, resolve the flow name + published version and the person's share code
+        to the ids trigger_flow_run needs (neither is ever collected as a raw id),
+        construct the bindings via the intended SDK surface (company ->
         identity()['company_user_id']; customer -> Connection.person_id), call
         trigger_flow_run, and store the returned platform flowRunId in the demo run
         file. Returns {runId, action:{"type":"none"}} — the drive happens on the GET
@@ -148,18 +158,49 @@ class FlowHandlers:
             return json_response({"error": "not_configured"}, 409)
 
         meta = self.rt.read_config_meta(STORE_KEY)
-        flow_id = str(meta.get("flow_id") or "")
-        connection_id = str(meta.get("connection_id") or "")
-        if not flow_id or not connection_id:
+        flow_name = str(meta.get("flow_name") or "").strip()
+        flow_version_raw = str(meta.get("flow_version") or "").strip()
+        share_code = str(meta.get("share_code") or "").strip()
+        if not flow_name or not flow_version_raw or not share_code:
             return json_response(
-                {"error": "not_configured", "message": "flow id and connection id are required"},
+                {
+                    "error": "not_configured",
+                    "message": "flow name, published version and share code are required",
+                },
                 409,
             )
+        if not flow_version_raw.isdigit():
+            return failure_response(
+                f'published version "{flow_version_raw}" is not a number', "start_failed", 400
+            )
+        flow_version = int(flow_version_raw)
 
         calls: List[str] = []
         try:
             calls.append(CALL_SERVICE_BUILD)
             client = self._service_client()
+
+            # Resolve the flow name + published version to its flow id. The pair is not guaranteed
+            # unique (nothing enforces it), so this can return zero, one, or more than one candidate
+            # — only exactly one is safe to proceed on; anything else refuses rather than guess.
+            calls.append(CALL_REQUEST_FIELDS)
+            candidates = _resolve_flow_id_candidates(client, flow_name, flow_version)
+            if len(candidates) == 0:
+                return failure_response(
+                    f'no published flow named "{flow_name}" at version {flow_version} — check '
+                    'the name and the "Published vN" the portal shows next to it',
+                    "start_failed",
+                    404,
+                )
+            if len(candidates) > 1:
+                return failure_response(
+                    f'more than one flow matches the name "{flow_name}" at version {flow_version} '
+                    '— rename one of them in the portal (the flow builder\'s name field, next to '
+                    '"Published vN") so the pair is unique, then try again',
+                    "start_failed",
+                    409,
+                )
+            flow_id = candidates[0]
 
             # The COMPANY party binds to this service's own company_user_id.
             calls.append(CALL_IDENTITY)
@@ -170,13 +211,23 @@ class FlowHandlers:
                     "identity() returned no company_user_id", "identity_error", 502
                 )
 
-            # The CUSTOMER party binds to the connected person's public person_id.
-            calls.append(CALL_CONNECTION)
-            connection = client.connection(connection_id)
-            person_id = connection.person_id
-            if not person_id:
+            # Resolve the person's own share code to their connection — the CUSTOMER party binds
+            # to the connected person's public person_id.
+            calls.append(CALL_CONNECTIONS)
+            connection = _resolve_connection(client, share_code)
+            if connection is None:
                 return failure_response(
-                    f"connection {connection_id} has no person_id (not found or not connected)",
+                    f'no connection found for share code "{share_code}" — is the person '
+                    "connected to this service?",
+                    "connection_error",
+                    404,
+                )
+            connection_id = str(connection.id or "")
+            person_id = connection.person_id
+            if not connection_id or not person_id:
+                return failure_response(
+                    f'connection for share code "{share_code}" has no id/person_id (not found '
+                    "or not connected)",
                     "connection_error",
                     502,
                 )
@@ -386,6 +437,38 @@ class FlowHandlers:
 
 
 # ── module helpers ────────────────────────────────────────────────────────────
+
+
+def _resolve_flow_id_candidates(client: Client, flow_name: str, flow_version: int) -> List[str]:
+    """Resolve a flow's name + published version to its CANDIDATE flow ids. flow_id/flow_name/
+    flow_version ride the additive ``.raw`` dict on the flow-tagged rows request_fields() returns
+    — they are not typed attributes of RequestField. Returns every DISTINCT flow id whose tagged
+    fields match both name and version, deduplicated, in first-seen order — nothing here
+    guarantees the pair is unique, so the caller decides what to do with zero, one, or more than
+    one candidate."""
+    seen: Dict[str, None] = {}
+    for field in client.request_fields():
+        raw = field.raw or {}
+        name = raw.get("flow_name")
+        version = raw.get("flow_version")
+        if name != flow_name or version is None or int(version) != flow_version:
+            continue
+        flow_id = str(raw.get("flow_id") or "")
+        if flow_id and flow_id not in seen:
+            seen[flow_id] = None
+    return list(seen.keys())
+
+
+def _resolve_connection(client: Client, share_code: str) -> Optional[Connection]:
+    """Resolve a person's own share code to their Connection. connections() auto-pages the whole
+    service — a demo has too few connections for that to matter, but it is the same call a real
+    integrator would make to look a person up by the one identifier they can read off their own
+    app."""
+    wanted = share_code.upper()
+    for connection in client.connections():
+        if connection.share_code is not None and connection.share_code.upper() == wanted:
+            return connection
+    return None
 
 
 def _own_cipher_by_slug(flow_run: Any) -> Dict[str, Any]:
