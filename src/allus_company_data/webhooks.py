@@ -39,7 +39,7 @@ from .config import Config
 from .crypto import GCM_IV_LEN, GCM_TAG_LEN, load_private_key
 from .errors import WebhookError
 from .http import _parse_xml  # reuse the platform XML inverse
-from .models import Change
+from .models import BinaryFetch, Change
 
 # Header names (case-insensitive lookup below).
 _HDR_WEBHOOK_ID = "x-allus-webhook-id"
@@ -145,7 +145,7 @@ def parse_webhook(
     *,
     type_for_slug: Callable[[str], Optional[str]],
     decrypt_value: Callable[[Any], str],
-    binary_fetch: Optional[Callable[[str], Any]] = None,
+    binary_fetch: Optional[BinaryFetch] = None,
     account_key: Optional[rsa.RSAPrivateKey] = None,
 ) -> Change:
     """Parse a webhook body → a typed :class:`Change`.
@@ -185,7 +185,7 @@ def handle_webhook(
     *,
     type_for_slug: Callable[[str], Optional[str]],
     decrypt_value: Callable[[Any], str],
-    binary_fetch: Optional[Callable[[str], Any]] = None,
+    binary_fetch: Optional[BinaryFetch] = None,
     account_key: Optional[rsa.RSAPrivateKey] = None,
 ) -> Change:
     """Verify + parse a webhook in one call.

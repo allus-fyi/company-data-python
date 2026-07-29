@@ -13,7 +13,7 @@ from allus_company_data import (
 |-------|-------------|
 | `ConfigError` | Missing/invalid config, an unreadable key file, or a wrong passphrase — at construction (fail fast). |
 | `AuthError` | The `client_credentials` token fetch/refresh failed (bad `client_id`/`secret`, revoked client); or a mid-flight 401 survived the one automatic refresh-and-retry. |
-| `ApiError(status, error_key, message)` | Any non-2xx from the API. |
+| `ApiError(status, error_key, message, details)` | Any non-2xx from the API. |
 | `DecryptError` | A ciphertext wrapper is malformed, the key is wrong, or the GCM tag mismatches. |
 | `WebhookError` | Signature verification failed, or a webhook envelope couldn't be unwrapped/parsed. |
 | `RateLimitError(retry_after)` | A 429 from a rate-limited endpoint. Subclass of `ApiError`. |
@@ -25,10 +25,23 @@ class ApiError(Exception):
     status: int                # the HTTP status
     error_key: Optional[str]   # the platform error_key, when the body provided one
     message: Optional[str]     # a human-readable message
+    details: dict              # the error body's remaining fields, verbatim
 ```
 
 `str(err)` is `"HTTP <status> (<error_key>): <message>"`. A transport failure
 (no HTTP response — e.g. a connection error) surfaces as `ApiError(0, None, …)`.
+
+`details` carries whatever the body sent beside the key and the message — no
+error needs its own exception type to be readable. The one that uses it today is
+the binary file endpoint's **410 `company_data.file_expired`** (a frozen answer's
+90-day retention has elapsed), which sends the answer's `content_sha256` and
+`expired_at`:
+
+```python
+except ApiError as e:
+    if e.error_key == "company_data.file_expired":
+        archive_note(e.details["content_sha256"], e.details["expired_at"])
+```
 
 ## `RateLimitError`
 

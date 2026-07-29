@@ -29,6 +29,7 @@ import json
 import os
 import secrets
 import tempfile
+from dataclasses import dataclass
 from typing import Union
 
 from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
@@ -211,27 +212,75 @@ def encrypt_for_public_key(plaintext: str, public_key: rsa.RSAPublicKey) -> dict
     }
 
 
+@dataclass(frozen=True)
+class BinaryFetchResult:
+    """One response from a company-facing binary file endpoint, in the shape a
+    :class:`BinaryHandle` needs.
+
+    #590 — the route has TWO 200 shapes and the company cannot predict which it will
+    get, because the answer depends on whether the person's source field is private,
+    which is theirs to change:
+
+    * **encrypted** — ``application/json``, ``{"encrypted":true,"value":<wrapper>}``.
+      The wrapper decrypts to the binary ENVELOPE string, from which the file bytes
+      are extracted.
+    * **plaintext** — the file's own ``Content-Type`` (e.g. ``image/jpeg``,
+      ``application/pdf``) and the body IS the file bytes. Nothing to decrypt.
+
+    The distinction is made on the response's ``Content-Type``, never guessed from
+    the body: a plaintext answer's first byte is whatever the file starts with, and a
+    PDF or a JPEG that happened to begin with a brace would be indistinguishable from
+    a wrapper by sniffing.
+
+    ``content_sha256`` is the platform's ``X-Allus-Content-Sha256`` — the sha256 of
+    exactly these bytes, present on both shapes — so a consumer can record what it
+    received and later prove its archived copy has not drifted.
+
+    The file bytes ride on ``data`` rather than on a field named ``bytes`` (the name
+    the other SDKs use): ``bytes`` is the builtin this module annotates with, and
+    shadowing it inside the class body is a trap for the next reader for no gain.
+    """
+
+    encrypted: bool
+    wrapper: Union[dict, str, None] = None
+    data: bytes | None = None
+    content_type: str | None = None
+    content_sha256: str | None = None
+
+
 class BinaryHandle:
     """Lazy handle for a binary (photo/document) value.
 
     A binary answer is stored server-side as a file, exposed in the hardened API
-    as a slot-keyed ``value_url`` (never the source field). On ``.bytes()`` /
-    ``.save()`` the handle GETs that URL, receives the ``{"_enc":1,...}`` wrapper,
-    runs the same decrypt as text → a JSON envelope STRING (photo:
-    ``{"full":"data:...","thumb":...}``; document: ``{"file":"data:...",...}``) —
-    NOT raw bytes — then parses the envelope and base64-decodes the primary
-    data-URI payload (``full`` for photos, ``file`` for documents) into the file
-    bytes.
+    as a slot-keyed ``value_url`` (never the source field). ``.bytes()`` and
+    ``.save()`` GET that URL and return the FILE BYTES either way — the caller never
+    has to know which of the two response shapes arrived.
+
+    #590 — THERE ARE TWO SHAPES, AND WHICH ONE ARRIVES IS THE PERSON'S CHOICE, NOT
+    THE COMPANY'S. Whether the person's source field is private decides it, they can
+    change it at any time, and nothing in the API announces it in advance:
+
+    * **private source** → ``application/json``
+      ``{"encrypted":true,"value":<wrapper>}``. The wrapper decrypts to a JSON
+      envelope STRING (photo: ``{"full":"data:...","thumb":...}``; document:
+      ``{"file":"data:...",...}``) — NOT raw bytes — whose primary data-URI payload
+      (``full`` for photos, ``file`` for documents) base64-decodes to the file.
+    * **plaintext source** → the file's own ``Content-Type`` and the body IS the
+      file. There is nothing to decrypt, and a handle built this way needs no service
+      key at all.
+
+    Photos resolve to the ``full`` representation. There is no variant selection: one
+    slot has one byte sequence and therefore one digest.
 
     The fetch + decrypt are supplied by the client as plain callables:
 
-    * ``value_url`` + ``fetch`` — ``fetch(value_url)`` returns the encrypted
-      wrapper (dict or its JSON string), the way the slot file endpoint serves
-      ``{"encrypted": true, "value": "<wrapper>"}`` (the client passes a callback
-      that does the GET + unwraps to the inner wrapper).
+    * ``value_url`` + ``fetch`` — ``fetch(value_url)`` returns a
+      :class:`BinaryFetchResult` saying which shape arrived (the client classifies it
+      on the response's ``Content-Type``; the body is never sniffed).
     * ``decrypt`` — ``decrypt(wrapper)`` returns the decrypted envelope string
       (a closure over the loaded service private key, so no key is ever passed
-      to this handle — config-only key handling).
+      to this handle — config-only key handling). Only ever called for the encrypted
+      shape.
 
     When the decrypted envelope is already in hand, a handle can also be built
     directly from ``envelope_json`` (no fetch).
@@ -254,26 +303,76 @@ class BinaryHandle:
         self._value_url = value_url
         self._fetch = fetch
         self._decrypt = decrypt
+        # Filled by _fetch_once(): the plaintext shape's file bytes, plus what the
+        # response said about whichever shape arrived.
+        self._plain_bytes: bytes | None = None
+        self._content_type: str | None = None
+        self._content_sha256: str | None = None
 
     @property
     def value_url(self) -> str | None:
         """The slot-keyed file URL this handle fetches from (opaque to callers)."""
         return self._value_url
 
+    @property
+    def content_sha256(self) -> str | None:
+        """The platform's ``X-Allus-Content-Sha256`` for the bytes this handle fetched.
+
+        The sha256 of exactly what :meth:`bytes` returns, so a consumer can record it
+        and later show that its archived copy has not drifted. ``None`` until
+        something has been fetched, and on a handle built from an envelope that was
+        never fetched through this class.
+
+        It is the platform's word, not a signature: it proves agreement with the
+        platform's record, not anything to a third party who doubts that record.
+        """
+        return self._content_sha256
+
+    @property
+    def content_type(self) -> str | None:
+        """The response ``Content-Type`` the bytes arrived with, once fetched."""
+        return self._content_type
+
+    def _fetch_once(self) -> None:
+        """Fetch once and record which shape arrived.
+
+        Idempotent: the result is cached on the handle so repeated
+        ``.bytes()``/``.save()`` calls do not re-fetch, and so a plaintext answer's
+        digest survives for :attr:`content_sha256`.
+        """
+        if self._plain_bytes is not None or self._envelope_json is not None:
+            return
+        if self._fetch is None or self._value_url is None:
+            raise DecryptError(
+                "BinaryHandle has no envelope and no fetch wiring "
+                "(build it with envelope_json, or value_url + fetch + decrypt)"
+            )
+        result = self._fetch(self._value_url)
+        self._content_type = result.content_type
+        self._content_sha256 = result.content_sha256
+
+        if not result.encrypted:
+            # A plaintext answer needs no service key. Requiring `decrypt` here would
+            # make a handle built without one fail on exactly the answers that do not
+            # need it.
+            self._plain_bytes = result.data if result.data is not None else b""
+            return
+        if self._decrypt is None:
+            raise DecryptError(
+                "binary answer is encrypted but this handle has no decrypt wiring"
+            )
+        self._envelope_json = self._decrypt(result.wrapper)
+
     def _resolve_envelope(self) -> str:
         """Return the decrypted envelope string, fetching+decrypting on first use."""
         if self._envelope_json is not None:
             return self._envelope_json
-        if self._fetch is None or self._decrypt is None or self._value_url is None:
+        self._fetch_once()
+        if self._envelope_json is None:
             raise DecryptError(
-                "BinaryHandle has no envelope and no fetch/decrypt wiring "
-                "(build it with envelope_json, or value_url + fetch + decrypt)"
+                "binary answer arrived as plaintext bytes; use bytes()/save()"
             )
-        wrapper = self._fetch(self._value_url)
-        envelope_json = self._decrypt(wrapper)
-        # Cache so repeated .bytes()/.save() don't re-fetch.
-        self._envelope_json = envelope_json
-        return envelope_json
+        return self._envelope_json
 
     @staticmethod
     def parse_envelope_bytes(envelope_json: str) -> bytes:
@@ -312,7 +411,17 @@ class BinaryHandle:
             raise DecryptError("binary data-URI payload is not valid base64") from exc
 
     def bytes(self) -> bytes:
-        """Fetch (if needed), decrypt, and return the decoded primary file bytes."""
+        """Fetch (if needed), decrypt, and return the decoded primary file bytes.
+
+        #590: a plaintext-shaped answer short-circuits here — its body already IS the
+        file, so there is no envelope to parse and no service key to apply.
+        """
+        if self._plain_bytes is not None:
+            return self._plain_bytes
+        if self._envelope_json is None:
+            self._fetch_once()
+            if self._plain_bytes is not None:
+                return self._plain_bytes
         return self.parse_envelope_bytes(self._resolve_envelope())
 
     def save(self, path: str) -> int:

@@ -93,7 +93,7 @@ class HttpClient:
 
         status = resp.status_code
         if status < 200 or status >= 300:
-            error_key, message = _extract_error(resp)
+            error_key, message, _ = _extract_error(resp)
             raise AuthError(
                 f"token request rejected (HTTP {status})"
                 + (f" [{error_key}]" if error_key else "")
@@ -140,6 +140,18 @@ class HttpClient:
         """
         return self._request("GET", path, raw=True)
 
+    def get_response(self, path: str) -> "requests.Response":
+        """GET returning the whole 2xx response — status, headers AND raw body, no parse.
+
+        #590: the company-facing binary file endpoints have two 200 shapes (a JSON
+        wrapper for an encrypted answer, raw file bytes for a plaintext one) that are
+        told apart by ``Content-Type``, and both carry an ``X-Allus-Content-Sha256``
+        digest header. Neither :meth:`get` (which parses) nor :meth:`get_raw` (which
+        drops the headers) can express that, so this hands the caller the response
+        itself. Auth/refresh/retry and error mapping are identical.
+        """
+        return self._request("GET", path, want_response=True)
+
     def post(
         self,
         path: str,
@@ -171,6 +183,7 @@ class HttpClient:
         raw_body: Optional[bytes] = None,
         content_type: Optional[str] = None,
         raw: bool = False,
+        want_response: bool = False,
     ) -> Any:
         """The shared request loop for every verb.
 
@@ -182,11 +195,12 @@ class HttpClient:
         body's ``error_key`` when present).
 
         ``raw=True`` (used by :meth:`get_raw`) skips the JSON/XML parse on a 2xx
-        and returns the response body bytes as-is — auth/refresh/429 handling is
-        unchanged.
+        and returns the response body bytes as-is; ``want_response=True`` (used by
+        :meth:`get_response`) returns the response object itself, headers included —
+        auth/refresh/429 handling is unchanged in both cases.
         """
         url = self._url(path)
-        wants_xml = self._config.format == "xml"
+        wants_xml = self.wants_xml
         accept = "application/xml" if wants_xml else "application/json"
 
         retries_429 = 0
@@ -211,9 +225,11 @@ class HttpClient:
             status = resp.status_code
 
             if 200 <= status < 300:
+                if want_response:
+                    return resp
                 if raw:
                     return resp.content
-                return self._parse_body(resp, wants_xml)
+                return self.parse_body(resp, wants_xml)
 
             if status == 401:
                 # One refresh-and-retry, then give up as AuthError.
@@ -221,7 +237,7 @@ class HttpClient:
                     refreshed_401 = True
                     self._bearer(force_refresh=True)
                     continue
-                error_key, message = _extract_error(resp)
+                error_key, message, _ = _extract_error(resp)
                 raise AuthError(
                     "unauthorized after token refresh"
                     + (f" [{error_key}]" if error_key else "")
@@ -229,12 +245,12 @@ class HttpClient:
                 )
 
             if status == 429:
-                error_key, message = _extract_error(resp)
+                error_key, message, details = _extract_error(resp)
                 # #481: a pending-cap 429 means the caller already holds the maximum concurrent
                 # 2FA challenges — a retry can never clear that, so surface it immediately as an
                 # ApiError instead of the blind Retry-After backoff every other 429 gets.
                 if error_key == "twofa.pending_cap":
-                    raise ApiError(status, error_key, message)
+                    raise ApiError(status, error_key, message, details)
                 retry_after = _parse_retry_after(resp)
                 if retries_429 < self._max_retries_429:
                     retries_429 += 1
@@ -243,15 +259,31 @@ class HttpClient:
                 raise RateLimitError(retry_after, error_key, message)
 
             # Any other non-2xx → ApiError with the body's error_key.
-            error_key, message = _extract_error(resp)
-            raise ApiError(status, error_key, message)
+            error_key, message, details = _extract_error(resp)
+            raise ApiError(status, error_key, message, details)
 
     def _url(self, path: str) -> str:
         if path.startswith("http://") or path.startswith("https://"):
             return path
         return self._api_url + ("" if path.startswith("/") else "/") + path
 
-    def _parse_body(self, resp: "requests.Response", wants_xml: bool) -> Any:
+    @property
+    def wants_xml(self) -> bool:
+        """True when this client is configured to speak XML (``config.format``).
+
+        Public since #590 so a caller that reads a response itself
+        (:meth:`get_response`) can still parse its body the way every other endpoint
+        is parsed.
+        """
+        return self._config.format == "xml"
+
+    def parse_body(self, resp: "requests.Response", wants_xml: bool) -> Any:
+        """Parse a response body per the configured format → Python data.
+
+        Public for the same reason as :attr:`wants_xml`: :meth:`get_response` hands
+        out the raw response, and its caller must not have to re-implement (or
+        hard-code away) the JSON/XML choice.
+        """
         text = resp.text
         if text is None or text.strip() == "":
             return {}
@@ -268,8 +300,16 @@ class HttpClient:
 # ── module-level helpers ─────────────────────────────────────────────────────
 
 
-def _extract_error(resp: "requests.Response") -> tuple[Optional[str], Optional[str]]:
-    """Pull ``error_key`` + a message out of a non-2xx body (JSON or XML)."""
+def _extract_error(
+    resp: "requests.Response",
+) -> tuple[Optional[str], Optional[str], dict]:
+    """Pull ``error_key`` + a message + the remaining fields out of a non-2xx body.
+
+    #590: everything BESIDE the key and the message travels on as ``details``, so a
+    body that carries actionable data (a 410 ``company_data.file_expired``'s
+    ``content_sha256`` + ``expired_at``) is readable without a bespoke exception type
+    per response.
+    """
     try:
         body = resp.json()
     except ValueError:
@@ -277,15 +317,22 @@ def _extract_error(resp: "requests.Response") -> tuple[Optional[str], Optional[s
         try:
             body = _parse_xml(resp.text)
         except Exception:  # pragma: no cover - truly opaque body
-            return None, (resp.text or None)
+            # Three elements on EVERY path: the callers unpack three, and a two-element
+            # return here would blow up on the error path, where it is least likely to
+            # be noticed.
+            return None, (resp.text or None), {}
     if isinstance(body, dict):
         error_key = body.get("error_key")
         message = body.get("error") or body.get("message")
+        details = {
+            k: v for k, v in body.items() if k not in ("error_key", "error", "message")
+        }
         return (
             str(error_key) if error_key is not None else None,
             str(message) if message is not None else None,
+            details,
         )
-    return None, None
+    return None, None, {}
 
 
 def _parse_retry_after(resp: "requests.Response") -> Optional[float]:

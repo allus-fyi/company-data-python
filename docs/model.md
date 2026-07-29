@@ -71,18 +71,30 @@ A lazy handle for a binary value. No network or decryption happens at constructi
 ```python
 class BinaryHandle:
     value_url: str | None             # the opaque slot-keyed file URL (read-only)
-    def bytes(self) -> bytes          # fetch (if needed) → decrypt → decoded primary file bytes
+    content_type: str | None          # the Content-Type the bytes arrived with (after a fetch)
+    content_sha256: str | None        # the platform's X-Allus-Content-Sha256 for those bytes
+    def bytes(self) -> bytes          # fetch (if needed) → the primary file bytes
     def save(self, path: str) -> int  # write bytes() to path; returns bytes written
 ```
 
-On first `.bytes()`/`.save()`:
+On first `.bytes()`/`.save()` the handle GETs the slot-keyed file endpoint and
+classifies the response on its `Content-Type` (never by sniffing the body). Which of
+the two 200 shapes arrives depends on whether the person's source field is private —
+their choice, changeable at any time, not announced in advance:
 
-1. GET the slot-keyed file endpoint → the API serves `{"encrypted": true, "value": <wrapper>}`.
-2. Decrypt the inner `{"_enc":1,…}` wrapper with the service key → a JSON file-envelope string (`{"full": "data:…", "thumb": …}` for photos, `{"file": "data:…", …}` for documents).
-3. Base64-decode the primary data URI (`full` for photos, `file` for documents) → the file bytes. Cached on the handle (repeated calls don't re-fetch).
+* **encrypted** (private source) — `application/json`, `{"encrypted": true, "value": <wrapper>}`:
+  1. Decrypt the inner `{"_enc":1,…}` wrapper with the service key → a JSON file-envelope string (`{"full": "data:…", "thumb": …}` for photos, `{"file": "data:…", …}` for documents).
+  2. Base64-decode the primary data URI (`full` for photos, `file` for documents) → the file bytes.
+* **plaintext** (non-private source) — the file's own `Content-Type` and the body IS
+  the file: returned as-is, no decrypt, no service key needed.
+
+Either shape is cached on the handle (repeated calls don't re-fetch) and both carry
+`X-Allus-Content-Sha256` → `content_sha256`, the sha256 of exactly the bytes
+`.bytes()` returns. There is no variant selection: one slot has one byte sequence.
 
 An unanswered binary slot yields an empty handle; calling `.bytes()` on it raises
-`DecryptError`.
+`DecryptError`. A frozen answer whose 90-day retention has elapsed raises `ApiError`
+(410 `company_data.file_expired`) with `content_sha256`/`expired_at` in `.details`.
 
 ## `Change`
 

@@ -13,8 +13,11 @@ Covered:
   connections()/changes need the slug→type map);
 * connections() is a LAZY generator yielding typed Connections with decrypted,
   slug-keyed values; it auto-pages and stops on a short page;
-* a binary value is a lazy BinaryHandle whose .bytes() GETs the slot endpoint,
-  unwraps {"encrypted":true,"value":...}, decrypts → the vector's inner bytes;
+* a binary value is a lazy BinaryHandle whose .bytes() GETs the slot endpoint and
+  serves the file bytes from EITHER 200 shape (#590): the encrypted
+  {"encrypted":true,"value":...} → decrypt → the vector's inner bytes, or a plaintext
+  answer's raw bytes under the file's own Content-Type (with its digest header);
+  and a 410 file_expired carries content_sha256/expired_at on ApiError.details;
 * connection(id) builds one Connection;
 * logs() deserializes the {total, items} shape;
 * process_changes() drains the fake feed through the pump one-by-one (and the
@@ -75,15 +78,22 @@ def config(vector, pem_path, tmp_path):
 
 
 class FakeResponse:
-    def __init__(self, status_code, *, json_body=None, text=None, headers=None):
+    def __init__(self, status_code, *, json_body=None, text=None, content=None, headers=None):
         self.status_code = status_code
         self._json_body = json_body
         if text is not None:
             self.text = text
         elif json_body is not None:
             self.text = json.dumps(json_body)
+        elif content is not None:
+            # #590: a plaintext binary answer is bytes that need not be valid text at
+            # all; keep .text best-effort so the double stays usable either way.
+            self.text = content.decode("utf-8", "replace")
         else:
             self.text = ""
+        # requests.Response.content is the undecoded body — what the plaintext shape
+        # of the file endpoint is read from.
+        self.content = content if content is not None else self.text.encode("utf-8")
         self.headers = headers or {}
 
     def json(self):
@@ -300,8 +310,13 @@ def test_binary_handle_fetches_slot_and_decrypts(config, vector):
         if url.endswith("/connections"):
             return FakeResponse(200, json_body=page)
         if url.endswith("/slots/sf-9/file"):
-            # The slot endpoint serves {"encrypted":true,"value":<wrapper>}.
-            return FakeResponse(200, json_body={"encrypted": True, "value": vector["binary"]["wrapper"]})
+            # A PRIVATE source field: the slot endpoint serves the encrypted shape,
+            # {"encrypted":true,"value":<wrapper>}, as application/json.
+            return FakeResponse(
+                200,
+                json_body={"encrypted": True, "value": vector["binary"]["wrapper"]},
+                headers={"Content-Type": "application/json"},
+            )
         raise AssertionError("unexpected GET " + url)
 
     client, session = _client(config, router)
@@ -313,6 +328,112 @@ def test_binary_handle_fetches_slot_and_decrypts(config, vector):
     data = handle.bytes()
     assert any(g["url"].endswith("/slots/sf-9/file") for g in session.gets)
     assert hashlib.sha256(data).hexdigest() == vector["binary"]["inner_full_sha256"]
+
+
+def test_binary_handle_serves_plaintext_bytes(config):
+    """#590 — a plaintext source field serves the FILE BYTES under the file's own
+    Content-Type. The handle returns them as-is (no decrypt, no envelope) and exposes
+    the platform's X-Allus-Content-Sha256 digest for the bytes it received."""
+    page = {
+        "total": 1,
+        "items": [{
+            "connection_id": "csc-1", "user_id": "person-1", "display_name": "Anna",
+            "values": {"logo": {
+                "value_url": "https://api.allme.fyi/api/company-data/connections/csc-1/slots/sf-9/file",
+                "live": True}},
+        }],
+    }
+    data = b"\xff\xd8\xff\xe0not-really-a-jpeg"
+    digest = hashlib.sha256(data).hexdigest()
+
+    def router(url, params):
+        if url.endswith("/request-fields"):
+            return FakeResponse(200, json_body=_REQUEST_FIELDS_BODY)
+        if url.endswith("/connections"):
+            return FakeResponse(200, json_body=page)
+        if url.endswith("/slots/sf-9/file"):
+            return FakeResponse(
+                200,
+                content=data,
+                headers={"Content-Type": "image/jpeg", "X-Allus-Content-Sha256": digest},
+            )
+        raise AssertionError("unexpected GET " + url)
+
+    client, _ = _client(config, router)
+    [conn] = list(client.connections())
+    handle = conn.values["logo"].value
+    assert isinstance(handle, BinaryHandle)
+    assert handle.bytes() == data
+    assert handle.content_type == "image/jpeg"
+    assert handle.content_sha256 == digest
+
+
+def test_binary_fetch_parses_encrypted_shape_in_xml_mode(vector, pem_path, tmp_path):
+    """#590 — an XML-configured client speaks XML on every other endpoint and must not
+    silently lose it on this one: the encrypted shape goes through the client's own
+    parser, not a hard-coded JSON decode."""
+    cfg = Config(
+        api_url="https://api.allme.fyi",
+        client_id="svc_abc",
+        client_secret="topsecret",
+        service_private_key=pem_path,
+        key_passphrase=vector["passphrase"],
+        cache_dir=str(tmp_path / "cache"),
+        format="xml",
+    )
+    wrapper = vector["binary"]["wrapper"]
+    # The platform's XML serialization of {"encrypted":true,"value":<wrapper>}.
+    inner = "".join(f"<{k}>{v}</{k}>" for k, v in wrapper.items())
+    xml = f"<response><encrypted>true</encrypted><value>{inner}</value></response>"
+    url = "https://api.allme.fyi/api/company-data/connections/csc-1/slots/sf-9/file"
+
+    def router(u, params):
+        if u.endswith("/slots/sf-9/file"):
+            return FakeResponse(200, text=xml, headers={"Content-Type": "application/xml"})
+        raise AssertionError("unexpected GET " + u)
+
+    client, _ = _client(cfg, router)
+    handle = BinaryHandle(
+        value_url=url, fetch=client._binary_fetch, decrypt=client._decrypt_value
+    )
+    assert hashlib.sha256(handle.bytes()).hexdigest() == vector["binary"]["inner_full_sha256"]
+    assert handle.content_type == "application/xml"
+
+
+def test_binary_handle_expired_answer_carries_digest(config):
+    """#590 — a 410 file_expired surfaces the digest and the expiry date through
+    ApiError.details (generic, not a bespoke exception type)."""
+    page = {
+        "total": 1,
+        "items": [{
+            "connection_id": "csc-1", "user_id": "person-1", "display_name": "Anna",
+            "values": {"logo": {
+                "value_url": "https://api.allme.fyi/api/company-data/connections/csc-1/slots/sf-9/file",
+                "live": False}},
+        }],
+    }
+
+    def router(url, params):
+        if url.endswith("/request-fields"):
+            return FakeResponse(200, json_body=_REQUEST_FIELDS_BODY)
+        if url.endswith("/connections"):
+            return FakeResponse(200, json_body=page)
+        return FakeResponse(410, json_body={
+            "error": "This file has expired",
+            "error_key": "company_data.file_expired",
+            "content_sha256": "abc123",
+            "expired_at": "2026-07-01T00:00:00Z",
+        })
+
+    client, _ = _client(config, router)
+    [conn] = list(client.connections())
+    handle = conn.values["logo"].value
+    with pytest.raises(ApiError) as exc:
+        handle.bytes()
+    assert exc.value.status == 410
+    assert exc.value.error_key == "company_data.file_expired"
+    assert exc.value.details["content_sha256"] == "abc123"
+    assert exc.value.details["expired_at"] == "2026-07-01T00:00:00Z"
 
 
 # ── connection(id) ─────────────────────────────────────────────────────────────

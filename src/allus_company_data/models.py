@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
 
-from .crypto import BinaryHandle, DecryptError, hash_matches
+from .crypto import BinaryFetchResult, BinaryHandle, DecryptError, hash_matches
 
 # Field types whose decrypted plaintext is a JSON object → a parsed dict.
 STRUCTURED_TYPES = ("address", "bank", "creditcard")
@@ -51,6 +51,10 @@ DATE_TYPES = ("date", "date_of_birth")
 DecryptValue = Callable[[Any], str]
 # A type resolver: slug -> the request field's type (e.g. "email", "photo").
 TypeForSlug = Callable[[str], Optional[str]]
+# A binary fetch callable: takes the slot-keyed value_url and returns the CLASSIFIED
+# response (#590 — the file endpoint has an encrypted and a plaintext 200 shape, and
+# only the caller of the HTTP layer can see the Content-Type that tells them apart).
+BinaryFetch = Callable[[str], BinaryFetchResult]
 
 
 def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
@@ -160,7 +164,7 @@ class Value:
         *,
         field_type: Optional[str],
         decrypt_value: DecryptValue,
-        binary_fetch: Optional[Callable[[str], Any]] = None,
+        binary_fetch: Optional[BinaryFetch] = None,
     ) -> "Value":
         """Build a typed Value from one hardened ``{value|value_url, live, updatedAt}`` entry."""
         live = bool(_coerce_bool(obj.get("live")))
@@ -180,7 +184,7 @@ def _typed_value(
     *,
     field_type: Optional[str],
     decrypt_value: DecryptValue,
-    binary_fetch: Optional[Callable[[str], Any]],
+    binary_fetch: Optional[BinaryFetch],
 ) -> Any:
     """Decrypt + coerce one value entry to its typed Python form."""
     ftype = (field_type or "").lower()
@@ -257,7 +261,7 @@ class Connection:
         *,
         type_for_slug: TypeForSlug,
         decrypt_value: DecryptValue,
-        binary_fetch: Optional[Callable[[str], Any]] = None,
+        binary_fetch: Optional[BinaryFetch] = None,
         identity: Optional[dict] = None,
     ) -> "Connection":
         """Build a Connection from a hardened ``connectionDetail`` (or list) object.
@@ -348,7 +352,7 @@ class Change:
         *,
         type_for_slug: TypeForSlug,
         decrypt_value: DecryptValue,
-        binary_fetch: Optional[Callable[[str], Any]] = None,
+        binary_fetch: Optional[BinaryFetch] = None,
     ) -> "Change":
         """Build a Change from one hardened changes-feed / webhook event object."""
         slug = obj.get("slug")
@@ -404,7 +408,7 @@ class Change:
         *,
         type_for_slug: TypeForSlug,
         decrypt_value: DecryptValue,
-        binary_fetch: Optional[Callable[[str], Any]] = None,
+        binary_fetch: Optional[BinaryFetch] = None,
     ) -> List["Change"]:
         """Parse the ``/changes`` response → a list of typed Change events."""
         items = body.get("changes", []) if isinstance(body, dict) else (body or [])

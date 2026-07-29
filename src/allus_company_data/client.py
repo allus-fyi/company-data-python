@@ -30,9 +30,11 @@ How it is wired (the "everything else the SDK hides"):
 * **Slug catalog** — ``request_fields()`` is fetched once and cached; its
   slug→type map types every value (so ``address`` parses to a dict, ``photo``
   becomes a lazy binary handle, etc.).
-* **Binary** — a value's ``BinaryHandle.bytes()`` GETs the slot file endpoint,
-  unwraps the API's ``{"encrypted":true,"value":<wrapper>}`` envelope, and runs
-  the same service-key decrypt → the file bytes.
+* **Binary** — a value's ``BinaryHandle.bytes()`` GETs the slot file endpoint and
+  returns the file bytes whichever of the endpoint's two 200 shapes arrives (#590):
+  an ``{"encrypted":true,"value":<wrapper>}`` envelope runs the same service-key
+  decrypt, while a plaintext answer's body already IS the file. The shapes are told
+  apart on ``Content-Type`` in ``_binary_fetch``.
 * **Changes feed** — ``process_changes`` delegates to the
   :class:`~allus_company_data.pump.Pump`, injecting a ``fetch_changes`` closure
   (``GET /changes?limit=``, returning the raw ciphertext events) and a
@@ -54,7 +56,13 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .config import Config
 from .crypto import decrypt as crypto_decrypt
-from .crypto import BinaryHandle, encrypt_for_public_key, load_private_key, load_public_key
+from .crypto import (
+    BinaryFetchResult,
+    BinaryHandle,
+    encrypt_for_public_key,
+    load_private_key,
+    load_public_key,
+)
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError, ValidationError
 from .field_validation import is_field_value_valid
 from .flow_condition import evaluate as evaluate_condition
@@ -164,18 +172,52 @@ class Client:
         """Decrypt a service-key ciphertext wrapper → plaintext (closes over the key)."""
         return crypto_decrypt(wrapper, self._private_key)
 
-    def _binary_fetch(self, value_url: str) -> Any:
-        """Fetch a slot file endpoint and unwrap its ``{"encrypted":true,"value":...}`` envelope.
+    def _binary_fetch(self, value_url: str) -> BinaryFetchResult:
+        """Fetch a company-facing binary file endpoint and classify its response.
 
-        Returns the inner ``{"_enc":1,...}`` wrapper, which the
-        :class:`~allus_company_data.crypto.BinaryHandle` then decrypts with the
-        same service key.
+        #590 — the endpoint has TWO 200 shapes and which one arrives is not the
+        company's to predict: a person whose source field is PRIVATE yields
+        ``application/json`` ``{"encrypted":true,"value":<wrapper>}``, a person whose
+        field is not yields the file's own Content-Type and the bytes themselves. The
+        decision is made on ``Content-Type`` and never by sniffing the body — a PDF or
+        an image that happened to start with a brace would be indistinguishable from a
+        wrapper.
+
+        A 410 ``company_data.file_expired`` (the answer's 90-day retention has elapsed)
+        surfaces as an :class:`~allus_company_data.errors.ApiError` whose ``details``
+        carry ``content_sha256`` and ``expired_at``.
         """
-        body = self._http.get(value_url)
-        if isinstance(body, dict) and "value" in body:
-            return body["value"]
-        # Defensive: some shapes might return the wrapper directly.
-        return body
+        resp = self._http.get_response(value_url)
+        content_type = resp.headers.get("Content-Type") or ""
+        digest = resp.headers.get("X-Allus-Content-Sha256")
+
+        # Plaintext is claimed ONLY on a Content-Type that positively says so. A missing
+        # or empty header falls through to the JSON path — the historical shape —
+        # because the two failure modes are not symmetrical: mistaking a wrapper for
+        # file bytes writes the ciphertext envelope to disk as if it were the document
+        # and nothing complains, while mistaking bytes for a wrapper fails loudly at the
+        # parse. Guess towards the loud one.
+        lowered = content_type.lower()
+        is_jsonish = content_type == "" or "json" in lowered or "xml" in lowered
+        if not is_jsonish:
+            return BinaryFetchResult(
+                encrypted=False,
+                data=resp.content,
+                content_type=content_type,
+                content_sha256=digest,
+            )
+
+        # Parsed through the client's OWN parser, not a hard-coded json.loads: an
+        # XML-configured client speaks XML on every other endpoint and must not silently
+        # lose it on this one.
+        body = self._http.parse_body(resp, self._http.wants_xml)
+        wrapper = body["value"] if isinstance(body, dict) and "value" in body else body
+        return BinaryFetchResult(
+            encrypted=True,
+            wrapper=wrapper,
+            content_type=content_type,
+            content_sha256=digest,
+        )
 
     def _type_for_slug(self, slug: str) -> Optional[str]:
         """Resolve a request slug to its field type (loads the catalog once)."""

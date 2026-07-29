@@ -15,7 +15,12 @@ from datetime import date, datetime
 
 import pytest
 
-from allus_company_data.crypto import BinaryHandle, decrypt, load_private_key
+from allus_company_data.crypto import (
+    BinaryFetchResult,
+    BinaryHandle,
+    decrypt,
+    load_private_key,
+)
 from allus_company_data.models import (
     Change,
     Connection,
@@ -215,13 +220,14 @@ def test_connection_detail_typed_slug_keyed(vector, decrypt_value, encrypt_for_k
 def test_binary_handle_lazy_fetch_and_decrypt(vector, decrypt_value):
     """The lazy handle's .bytes() goes value_url → fetch → decrypt → envelope →
     inner bytes, reproducing the shared vector's binary hash."""
-    # The 'fetch' callback returns the encrypted wrapper for the slot (in the
-    # live API the client unwraps {"encrypted":true,"value":...} to this wrapper).
+    # #590: the fetch callback classifies the response. Here it reports the ENCRYPTED
+    # shape — what the route serves when the person's source field is private (the
+    # client unwraps {"encrypted":true,"value":...} to this wrapper).
     captured = {}
 
     def fetch(url):
         captured["url"] = url
-        return vector["binary"]["wrapper"]
+        return BinaryFetchResult(encrypted=True, wrapper=vector["binary"]["wrapper"])
 
     detail = {
         "connection_id": "csc-1",
@@ -326,7 +332,9 @@ def test_change_field_updated_binary_is_lazy_handle(vector, decrypt_value):
             }
         ]
     }
-    fetch = lambda url: vector["binary"]["wrapper"]
+    fetch = lambda url: BinaryFetchResult(
+        encrypted=True, wrapper=vector["binary"]["wrapper"]
+    )
     [chg] = Change.list_from_api(
         body, type_for_slug=lambda s: "photo", decrypt_value=decrypt_value, binary_fetch=fetch
     )

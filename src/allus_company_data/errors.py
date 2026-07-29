@@ -8,7 +8,8 @@
 | AuthError                | Token fetch/refresh failed (bad client_id/       |
 |                          | secret, revoked client).                         |
 | ApiError(status,         | Any non-2xx from the API; carries the HTTP       |
-|   error_key, message)    | status + the platform ``error_key`` + message.   |
+|   error_key, message,    | status + the platform ``error_key`` + message,   |
+|   details)               | plus the body's remaining fields as ``details``. |
 | DecryptError             | Wrapper malformed, wrong key, or GCM tag         |
 |                          | mismatch.                                        |
 | WebhookError             | Signature verification failed or an envelope     |
@@ -51,7 +52,15 @@ class ApiError(Exception):
     """Any non-2xx from the API.
 
     Carries the HTTP ``status``, the platform ``error_key`` (when the body
-    provided one), and a human-readable ``message``.
+    provided one), a human-readable ``message``, and ``details`` — the error body's
+    remaining fields, verbatim.
+
+    #590 added the first response that carries actionable data BESIDE the key: a 410
+    ``company_data.file_expired`` returns the expired answer's ``content_sha256`` and
+    ``expired_at``, so a consumer can record that its archived copy is now the only
+    one and still prove what it holds. Generic rather than a bespoke subclass — every
+    error body's extra fields become reachable, and no future one needs a new
+    exception type to be readable.
     """
 
     def __init__(
@@ -59,10 +68,12 @@ class ApiError(Exception):
         status: int,
         error_key: Optional[str] = None,
         message: Optional[str] = None,
+        details: Optional[dict] = None,
     ) -> None:
         self.status = status
         self.error_key = error_key
         self.message = message
+        self.details: dict = details if details is not None else {}
         parts = [f"HTTP {status}"]
         if error_key:
             parts.append(f"({error_key})")

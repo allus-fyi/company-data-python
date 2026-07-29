@@ -16,6 +16,7 @@ from .customer import CustomerClient
 from .customer_models import CustomerConnection, CustomerServiceLink
 from .config import Config
 from .crypto import (
+    BinaryFetchResult,
     BinaryHandle,
     decrypt,
     encrypt_for_public_key,
@@ -70,6 +71,9 @@ __all__ = [
     "decrypt",
     "encrypt_for_public_key",
     "BinaryHandle",
+    # #590: what a custom `binary_fetch` must return (the two 200 shapes of the
+    # company-facing file endpoint).
+    "BinaryFetchResult",
     # errors
     "ConfigError",
     "AuthError",

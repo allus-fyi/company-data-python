@@ -425,16 +425,49 @@ you call `.bytes()` or `.save()`:
 ```python
 handle = conn.values["passport_scan"].value   # BinaryHandle (no network yet)
 
-data = handle.bytes()                          # GET the slot file → decrypt → file bytes
+data = handle.bytes()                          # GET the slot file → the file bytes
 n    = handle.save("/tmp/passport.jpg")        # same, written to disk; returns bytes written
 print(handle.value_url)                         # the opaque slot-keyed URL it fetches from
+print(handle.content_type)                      # what the bytes arrived as, once fetched
+print(handle.content_sha256)                    # the platform's digest of exactly those bytes
 ```
 
-`.bytes()` GETs the slot-keyed file endpoint, unwraps the API's
-`{"encrypted": true, "value": <wrapper>}` envelope, decrypts with your service
-key, parses the inner JSON envelope (`{"full": "data:…"}` for photos,
-`{"file": "data:…"}` for documents) and base64-decodes the data URI into the
-file bytes. The result is cached on the handle, so repeated calls don't re-fetch.
+`.bytes()` GETs the slot-keyed file endpoint and returns the file bytes — but that
+endpoint has **two 200 shapes, and which one you get is the person's choice, not
+yours**. It depends on whether their source field is private, they can change that
+at any time, and nothing announces it in advance:
+
+* **private source** → `application/json`, `{"encrypted": true, "value": <wrapper>}`.
+  The handle decrypts the wrapper with your service key, parses the inner JSON
+  envelope (`{"full": "data:…"}` for photos, `{"file": "data:…"}` for documents) and
+  base64-decodes the data URI into the file bytes.
+* **plaintext source** → the file's own `Content-Type` (`image/jpeg`,
+  `application/pdf`, …) and the body IS the file. Nothing is decrypted and no service
+  key is needed.
+
+The handle hides the difference: `.bytes()`/`.save()` give you the file either way.
+The shapes are told apart on the response `Content-Type`, never by looking at the
+body — a PDF that happened to start with a brace must not be mistaken for a wrapper.
+The result is cached on the handle, so repeated calls don't re-fetch.
+
+Every 200 carries `X-Allus-Content-Sha256`, the sha256 of exactly the bytes returned;
+`handle.content_sha256` is that header (and `handle.content_type` the Content-Type),
+so you can record what you received and later show your archived copy has not
+drifted. It is the platform's word, not a signature. There is no variant selection —
+one slot has one byte sequence and therefore one digest.
+
+A frozen (share-once) answer is retained for 90 days. After that the endpoint returns
+**410 `company_data.file_expired`**, which surfaces as an `ApiError` whose `details`
+carry the answer's `content_sha256` and `expired_at` — your archived copy is then the
+only one, and you can still prove what it is:
+
+```python
+try:
+    data = handle.bytes()
+except ApiError as e:
+    if e.error_key == "company_data.file_expired":
+        log(e.details["content_sha256"], e.details["expired_at"])
+```
 
 ### `Change(id, event, person_id, slug?, value?, live?, at)`
 
@@ -849,7 +882,7 @@ All from `allus_company_data`. Same taxonomy + names across all six SDKs.
 |-------|------|
 | `ConfigError` | Missing/invalid config, unreadable key file, or wrong passphrase — at construction (fail fast). |
 | `AuthError` | Token fetch/refresh failed (bad `client_id`/`secret`, revoked client); or a 401 survives the one automatic refresh-and-retry. |
-| `ApiError(status, error_key, message)` | Any non-2xx from the API; carries the HTTP `status`, the platform `error_key` (when present), and `message`. |
+| `ApiError(status, error_key, message, details)` | Any non-2xx from the API; carries the HTTP `status`, the platform `error_key` (when present), `message`, and `details` — the error body's remaining fields (e.g. a 410 `company_data.file_expired`'s `content_sha256` + `expired_at`). |
 | `DecryptError` | A ciphertext wrapper is malformed, the key is wrong, or the GCM tag mismatches. Surfaces when a value is accessed/decrypted. |
 | `WebhookError` | Signature verification failed, or an envelope couldn't be unwrapped/parsed. |
 | `RateLimitError(retry_after)` | A 429 from a rate-limited endpoint. Subclass of `ApiError` (status fixed at 429); carries `retry_after` (seconds, or `None`). |
@@ -902,10 +935,12 @@ RSA-OAEP-SHA256 unwraps the AES key, then AES-256-GCM decrypts the payload. **Th
 platform only ever holds ciphertext — it never sees your plaintext.**
 
 **Binary fetch.** A binary value is a lazy `BinaryHandle` over a slot-keyed
-`value_url`. On `.bytes()`/`.save()` it GETs that file endpoint, unwraps the
-`{"encrypted":true,"value":<wrapper>}` envelope, runs the same service-key
-decrypt to a JSON file-envelope, and base64-decodes its data URI to the file
-bytes. (Slot-keyed, never source-field-keyed.)
+`value_url`. On `.bytes()`/`.save()` it GETs that file endpoint and classifies the
+response on its `Content-Type`: an encrypted answer (`{"encrypted":true,"value":…}`)
+runs the same service-key decrypt to a JSON file-envelope and base64-decodes its data
+URI, while a plaintext answer's body already IS the file. Either way you get the file
+bytes, plus the response's `X-Allus-Content-Sha256` on `.content_sha256`.
+(Slot-keyed, never source-field-keyed.)
 
 **The drain-on-fetch feed.** `process_changes` delegates to a `Pump` wired to a
 `fetch_changes` closure (`GET /changes?limit=`, returning raw ciphertext events)
