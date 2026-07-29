@@ -329,7 +329,11 @@ class FlowHandlers:
         surface)."""
         run["calls"] = add_call(run.get("calls", []), CALL_ANSWERS)
         answers = client.flow_run_answers(flow_run)
-        run["answers"] = [{"slug": str(slug), "value": jsonable(value)} for slug, value in answers.items()]
+        ciphers = _own_cipher_by_slug(flow_run)
+        run["answers"] = [
+            {"slug": str(slug), "value": jsonable(value), "cipher": jsonable(ciphers.get(str(slug)))}
+            for slug, value in answers.items()
+        ]
 
         if flow_run.output_mode == "document":
             try:
@@ -382,6 +386,19 @@ class FlowHandlers:
 
 
 # ── module helpers ────────────────────────────────────────────────────────────
+
+
+def _own_cipher_by_slug(flow_run: Any) -> Dict[str, Any]:
+    """The company's own answer rows, keyed by slug and left as the still-encrypted wrapper the
+    API returned — the evidence the "Decrypted answers" panel pairs against each cleartext value,
+    so a reader can see the decrypt actually ran on real ciphertext rather than take it on faith."""
+    service_uid = flow_run.service_user_id
+    out: Dict[str, Any] = {}
+    for row in flow_run.answers:
+        slug = row.get("slug")
+        if isinstance(slug, str) and row.get("for_user_id") == service_uid:
+            out[slug] = row.get("value")
+    return out
 
 
 def _canned_value(ftype: str) -> str:
