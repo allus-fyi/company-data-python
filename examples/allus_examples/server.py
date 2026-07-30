@@ -16,7 +16,7 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
-from .common import Response, failure_response, json_response, mime
+from .common import Response, failure_response, json_response, mime, raw_json_response
 from .handlers.company_data import CompanyDataHandlers
 from .handlers.flow import FlowHandlers
 from .handlers.identity import IdentityHandlers
@@ -69,6 +69,16 @@ class Server:
             if path == "/api/clear" and method == "POST":
                 self.rt.clear_all()
                 return json_response({"ok": True})
+            if path == "/api/state" and method == "POST":
+                # The setup snapshot, stored verbatim; the bytes are never inspected or decoded here.
+                self.rt.write_state(body)
+                return json_response({"ok": True})
+            if path == "/api/state" and method == "GET":
+                # Handed back exactly as stored; no snapshot file at all -> 404 not_found.
+                blob = self.rt.read_state()
+                if blob is None:
+                    return json_response({"error": "not_found"}, 404)
+                return raw_json_response(blob)
 
             # ── scenario-scoped routes -> the owning family's handler ───────
             m = _SCENARIO_ROUTE_RE.match(path)

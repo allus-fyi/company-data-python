@@ -72,6 +72,15 @@ def failure_response(
     )
 
 
+def raw_json_response(blob: bytes, status: int = 200) -> Response:
+    """Serve a JSON document that is already encoded, byte for byte — the stored setup snapshot.
+
+    The bytes are passed through as they are because parsing and re-serialising them here,
+    or decoding them to ``str`` and back, would rewrite content this server is not allowed
+    to interpret."""
+    return Response(status, {"Content-Type": "application/json"}, blob)
+
+
 def text_response(body: str, status: int = 200) -> Response:
     return Response(status, {"Content-Type": "text/plain; charset=utf-8"}, body.encode("utf-8"))
 

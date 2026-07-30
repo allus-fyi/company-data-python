@@ -57,6 +57,9 @@ class Runtime:
         # this path), so Clear / the startup wipe removes it too.
         self.cache_dir = os.path.join(self.runtime_dir, "cache")
         self.route_path = os.path.join(self.runtime_dir, "webhook-route.json")
+        # The setup snapshot POSTed to /api/state, held verbatim as OPAQUE cold storage:
+        # never parsed here, never used to run anything.
+        self.state_path = os.path.join(self.runtime_dir, "state.json")
 
     # ── directories ─────────────────────────────────────────────────────────
 
@@ -180,6 +183,34 @@ class Runtime:
         shutil.rmtree(self.cache_dir, ignore_errors=True)
         self.ensure_dirs()
 
+    # ── the setup snapshot (POST/GET /api/state) ──────────────────────────────
+
+    def write_state(self, blob: bytes) -> None:
+        """Store the setup snapshot the request carried, VERBATIM.
+
+        The bytes are OPAQUE here — never parsed, never inspected, never used to run
+        anything — so nothing in this class constrains what they may contain, and an
+        empty body is a snapshot like any other. They stay ``bytes`` end to end: decoding
+        to ``str`` and back would re-encode content this store is not allowed to
+        interpret. Carries no TTL (it is setup, not a run); removed by a global clear or
+        the startup wipe."""
+        self.ensure_dirs()
+        _atomic_write_bytes(self.state_path, blob)
+
+    def read_state(self) -> Optional[bytes]:
+        """The stored snapshot's bytes, or None when NO snapshot file exists.
+
+        The file's presence is the whole of the answer, since judging the content would be
+        the inspection this store does not do. A file that exists but cannot be read raises,
+        because that is a fault rather than an absence."""
+        if not os.path.isfile(self.state_path):
+            return None
+        with open(self.state_path, "rb") as fh:
+            return fh.read()
+
+    def clear_state(self) -> None:
+        _unlink(self.state_path)
+
     # ── clear ─────────────────────────────────────────────────────────────────
 
     def clear_scenario(self, match: Any) -> None:
@@ -201,12 +232,17 @@ class Runtime:
         self._gc_config_keys()
 
     def clear_all(self) -> None:
-        """Global clear: wipe all run files, the config tree, the route + pump cache."""
+        """Global clear: wipe all run files, the config tree, the route + pump cache, and
+        the saved setup snapshot.
+
+        The snapshot goes too because it can hold the same credentials the config tree
+        does — a clear that left it behind would leave those sitting on disk."""
         for name in _listdir(self.runs_dir):
             _unlink(os.path.join(self.runs_dir, name))
         shutil.rmtree(self.config_dir, ignore_errors=True)
         shutil.rmtree(self.cache_dir, ignore_errors=True)
         self.clear_route()
+        self.clear_state()
         self.ensure_dirs()
 
     def _gc_config_keys(self) -> None:
@@ -235,8 +271,13 @@ def _dumps(obj: Any) -> str:
 
 
 def _atomic_write(final_path: str, contents: str, mode: Optional[int] = None) -> None:
+    _atomic_write_bytes(final_path, contents.encode("utf-8"), mode)
+
+
+def _atomic_write_bytes(final_path: str, contents: bytes, mode: Optional[int] = None) -> None:
+    """Write-temp + atomic rename, for content that must land as the exact bytes given."""
     tmp = f"{final_path}.{secrets.token_hex(4)}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    with open(tmp, "wb") as fh:
         fh.write(contents)
     if mode is not None:
         os.chmod(tmp, mode)
