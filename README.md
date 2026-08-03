@@ -31,7 +31,11 @@ Deeper reference pages live in [`docs/`](docs/):
 
 ## TL;DR — fetch new updates
 
+A system/Homebrew Python refuses a bare `pip install` (PEP 668) — install into a
+virtualenv:
+
 ```bash
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install allus-company-data
 ```
 
@@ -74,9 +78,11 @@ documented below.
 
 ## Quickstart
 
-Requires **Python ≥ 3.11**.
+Requires **Python ≥ 3.11**. A system/Homebrew Python refuses a bare `pip install`
+(PEP 668) — install into a virtualenv:
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install allus-company-data
 # or, working from a clone:    pip install -e '.[dev]'      # from the repo root
 python -c "import allus_company_data; print(allus_company_data.__version__)"

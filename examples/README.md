@@ -30,16 +30,16 @@ the standard library.
 ## Get the code
 
 The shortest path is the package manager: this suite ships **inside** the published
-`allus-company-data` package, so installing the SDK also gets you the example. Change
-into the copy that came with it:
+`allus-company-data` package, so installing the SDK also gets you the example. Install
+into a virtualenv you can write to — the launcher creates its own `.venv` and writes run
+state next to the suite, and a system/Homebrew Python refuses a bare `pip install`
+anyway (PEP 668). Then change into the copy that came with it:
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install allus-company-data
 cd "$(python -c 'import allus_company_data.examples as e, os; print(os.path.dirname(e.__file__))')"
 ```
-
-Install into a virtualenv you can write to — the launcher creates its own `.venv` and
-writes run state next to the suite.
 
 Or clone the SDK repository and change into this examples directory:
 
