@@ -451,6 +451,9 @@ class IdentityHandlers:
             "mode": out.get("mode"),
             "two_factor": bool(out.get("two_factor")),
             "values": out.get("values") or {},
+            # The raw app-key ciphertext each decrypted value above came from — pairs with
+            # "values" by claim name so the panel can show a decrypt actually ran on real bytes.
+            "values_cipher": out.get("values_cipher") or {},
         }
 
         if scenario_id == 4:  # Connect: read the person's LIVE values via the service Client.

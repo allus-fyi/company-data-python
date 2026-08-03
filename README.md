@@ -968,7 +968,7 @@ from allus_company_data import OAuthClient, Claim
 oauth = OAuthClient.from_config("idw-config.json")  # {api_url, oauth_client_id, oauth_redirect_uri, oauth_client_secret?, oauth_private_key?, oauth_key_passphrase?}
 url = oauth.authorize_url("signin", state="xyz", code_challenge=challenge)   # the button target
 # ...user approves; your redirect_uri receives ?code=...
-info = oauth.complete_sign_in(code, code_verifier=verifier)  # {user, mode, values(plaintext)}
+info = oauth.complete_sign_in(code, code_verifier=verifier)  # {user, mode, values(plaintext), values_cipher}
 ```
 
 Modes: `signin` (identity), `one_time` (frozen claim values, decrypted for you), `connect` (a lasting connection),
@@ -977,15 +977,19 @@ Modes: `signin` (identity), `one_time` (frozen claim values, decrypted for you),
 
 **#498 — a claim IS a request field.** You describe what you need and the **person** picks which of their
 own fields answers it; you never name a field. A claim carries a mandatory unique `name` (everything
-that comes back is keyed by it — `values`, `attestations`, and their stored choice for a repeat login),
-a field `type`, an optional `suggest`ed slug, `required`, and `verified` ("only a #311-verified answer
-will do"). A nameless or duplicate claim raises `ConfigError` at the call rather than failing at the
-API. `verified` is accepted only on the OIDC flow and only for a type allme can verify (today `email`);
-elsewhere it is refused with `invalid_request` rather than quietly dropped.
+that comes back is keyed by it — `values`, `values_cipher`, `attestations`, and their stored choice for a
+repeat login), a field `type`, an optional `suggest`ed slug, `required`, and `verified` ("only a
+#311-verified answer will do"). A nameless or duplicate claim raises `ConfigError` at the call rather than
+failing at the API. `verified` is accepted only on the OIDC flow and only for a type allme can verify
+(today `email`); elsewhere it is refused with `invalid_request` rather than quietly dropped.
 
-`complete_sign_in` returns `{user, mode, two_factor, values, attestations}`.
+`complete_sign_in` returns `{user, mode, two_factor, values, values_cipher, attestations}`.
 * `user.sub` **is** the person's share code and equals `share_code` — byte-identical to the id_token's
   `sub`. `display_name` is gone: ask for a `name` claim and read `values["name"]`.
+* `values_cipher` is an additive sibling of `values`, keyed the same way: the raw app-key ciphertext
+  wrapper each plaintext value was decrypted from, exactly as `userinfo` delivered it. Lets you show that
+  a value really came from encrypted delivery rather than trusting it verbatim. Empty for a mode/claim
+  that carries no ciphertext (`signin`, or `plaintext` delivery) — that emptiness is the honest answer.
 * `attestations` is an additive sibling map keyed by the same claim name, present only for a `verified`
   claim under encrypted delivery. Each entry carries a `verified` boolean **the SDK computes itself**,
   in constant time, over the plaintext it just decrypted — plus the raw `hash`/`salt`/`verifiedAt`.

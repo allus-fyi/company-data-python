@@ -239,14 +239,21 @@ class OAuthClient:
         """Exchange + userinfo in one call, decrypting one_time values.
 
         Returns ``{"user": {...}, "mode": str, "values": {claim: plaintext},
-        "attestations": {claim: Attestation}}``. Decryption uses the app private key from
-        config (oauth_private_key + oauth_key_passphrase) — required only when values are
-        present.
+        "values_cipher": {claim: wrapper}, "attestations": {claim: Attestation}}``. Decryption uses
+        the app private key from config (oauth_private_key + oauth_key_passphrase) — required only
+        when values are present.
 
         ``user["sub"]`` IS the person's SHARE CODE and is byte-identical to the
         id_token's ``sub``; ``share_code`` is retained beside it and simply equals it.
         ``display_name`` is not a field of ``user`` — it is a consented ``name`` claim, or
         nothing: ask for ``Claim(name="name", type="text")`` and read ``values["name"]``.
+
+        ``values_cipher`` is an ADDITIVE sibling of ``values``, keyed by the SAME claim name: the
+        RAW app-key ciphertext wrapper each plaintext value was decrypted from, exactly as
+        delivered by userinfo. Lets a caller demonstrate that a value really came from encrypted
+        delivery rather than being trusted verbatim. Empty for a mode/claim carrying no ciphertext
+        (signin mode, or plaintext delivery) — that absence is the honest answer, never a
+        placeholder.
 
         ``attestations`` is an ADDITIVE sibling map keyed by the SAME claim name
         as ``values``, present only for a ``verified`` claim under ENCRYPTED delivery. An
@@ -263,11 +270,13 @@ class OAuthClient:
             "mode": mode,
             "two_factor": bool(info.get("two_factor")),
             "values": {},
+            "values_cipher": {},
             "attestations": {},
         }
         raw_values = info.get("values")
         if raw_values:
             result["values"] = self._decrypt_values(raw_values)
+            result["values_cipher"] = raw_values
             raw_attest = info.get("values_attestation")
             if raw_attest:
                 result["attestations"] = self._decrypt_attestations(raw_attest, result["values"])
