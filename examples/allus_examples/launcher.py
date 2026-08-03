@@ -155,13 +155,21 @@ def _make_handler(server: Server):
                 resp = server.dispatch(self.command, self.path, body, headers)
             except Exception as exc:  # noqa: BLE001 — outermost guard; nothing above answers
                 resp = failure_response(exc)
-            self.send_response(resp.status)
-            for name, value in resp.headers.items():
-                self.send_header(name, value)
-            self.send_header("Content-Length", str(len(resp.body)))
-            self.end_headers()
-            if resp.body:
-                self.wfile.write(resp.body)
+            # A client that aborts or supersedes an in-flight request (the frontend's poll fetch is
+            # the common case) can close its socket between here and the write below; the response is
+            # then unanswerable, not a server fault. Left unguarded, the default handling prints a raw
+            # traceback for every such request — noisy on its own, and a burst of polls dropped during
+            # one slow request multiplies it. Report the one line the socket state actually is instead.
+            try:
+                self.send_response(resp.status)
+                for name, value in resp.headers.items():
+                    self.send_header(name, value)
+                self.send_header("Content-Length", str(len(resp.body)))
+                self.end_headers()
+                if resp.body:
+                    self.wfile.write(resp.body)
+            except (BrokenPipeError, ConnectionResetError) as exc:
+                sys.stderr.write(f"  client disconnected before the response was written ({exc})\n")
 
         def do_GET(self) -> None:  # noqa: N802
             self._handle()
