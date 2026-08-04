@@ -68,7 +68,9 @@ class OidcClient:
         return uri
 
     def complete(self, code: str, state: str, code_verifier: str, nonce: str) -> Dict[str, Any]:
-        """Exchange the code (client_secret_post) and verify the id_token; return its claims."""
+        """Exchange the code (client_secret_post) and verify the id_token; return its claims plus the
+        access token (used to additionally read userinfo for claim values the id_token cannot carry —
+        see IdentityHandlers._complete_oidc)."""
         meta = self._metadata()
         sess = self._session()
         token = sess.fetch_token(
@@ -81,7 +83,7 @@ class OidcClient:
         if not id_token:
             raise ValueError("token response contained no id_token")
         claims = self._verify_id_token(id_token, meta, nonce)
-        return dict(claims)
+        return {"claims": dict(claims), "access_token": token.get("access_token")}
 
     def _verify_id_token(self, id_token: str, meta: Dict[str, Any], nonce: str) -> Any:
         jwks = requests.get(meta["jwks_uri"], timeout=_DISCOVERY_TIMEOUT).json()

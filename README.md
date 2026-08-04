@@ -1003,6 +1003,16 @@ failing at the API. `verified` is accepted only on the OIDC flow and only for a 
   **an entry present with `verified` false is a MISMATCH and you must reject the value.** `verifiedAt`
   attests the value as verified *at that moment*, not verified today.
 
+**`resolve_userinfo(access_token, fallback_mode=None)`** is the second half of `complete_sign_in` — the
+`userinfo` read + decrypt + attest, without the token exchange — for a caller whose exchange already ran
+through a different client (a standards-only third-party OIDC library, say, that verified the id_token
+itself but cannot read a claim value the id_token never carries). Config-only key handling applies exactly
+as it does to `complete_sign_in`: you pass no key or passphrase, only the access token you already hold.
+Returns the identical shape (`values`, `values_cipher`, `attestations`) and carries the same
+mismatch-rejection duty on the caller. `complete_sign_in` is implemented on top of this method.
+`fallback_mode` is used only when `userinfo` itself omits `mode` — pass the mode your own token
+response carried, or `None` if you have none.
+
 
 ## 2FA by allme (#436, #481)
 

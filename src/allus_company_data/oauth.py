@@ -263,8 +263,22 @@ class OAuthClient:
         access_token = token.get("access_token")
         if not access_token:
             raise AuthError("token exchange returned no access_token")
-        info = self.userinfo(str(access_token))
-        mode = info.get("mode") or token.get("mode")
+        return self.resolve_userinfo(str(access_token), fallback_mode=token.get("mode"))
+
+    def resolve_userinfo(self, access_token: str, fallback_mode: Optional[str] = None) -> dict:
+        """Read + decrypt userinfo for an access token ALREADY held — the second half of
+        :meth:`complete_sign_in`, split out so a caller that obtained its access token through
+        its own separate exchange can still resolve and decrypt the claim values. Config-only key
+        handling still holds — the caller passes no key/passphrase, only the token it already
+        has; the private key is read from config exactly as :meth:`complete_sign_in` does.
+
+        Re-exchanging the code here would be wrong (a second exchange either mints a second grant
+        or fails outright), so this method never does the exchange — only the read + decrypt.
+
+        Returns the same shape as :meth:`complete_sign_in`.
+        """
+        info = self.userinfo(access_token)
+        mode = info.get("mode") or fallback_mode
         result: Dict[str, Any] = {
             "user": {k: info.get(k) for k in ("sub", "share_code")},
             "mode": mode,

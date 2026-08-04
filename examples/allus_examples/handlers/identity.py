@@ -22,6 +22,7 @@ from allus_company_data import (
     Claim,
     Client,
     Config,
+    ConfigError,
     HttpClient,
     OAuthClient,
 )
@@ -46,12 +47,9 @@ SCENARIOS: Dict[int, str] = {
 }
 SERVICE_SCENARIOS = (4, 8)      # also read live values via the service data Client
 OAUTH_URL_SCENARIOS = (1, 2, 3, 4, 8)  # build a consent URL via OAuthClient
-# Scenarios whose complete_sign_in() response can carry claim values (userinfo "values"
-# non-empty) and therefore need the OAuth app private key configured to decrypt them: mode
-# one_time and mode connect, both delivered as app-key ciphertext through userinfo. Mode signin
-# (scenarios 1, 2) never carries values; scenario 8 never calls this leg at all; scenario 5
-# runs Authlib instead of this SDK's decrypt path.
-CLAIM_VALUE_SCENARIOS = (3, 4)
+# Scenarios that persist the OAuth app private key + passphrase, for _complete_oidc and
+# OAuthClient.complete_sign_in to decrypt userinfo values with.
+CLAIM_VALUE_SCENARIOS = (3, 4, 5)
 
 DEFAULT_API_URL = "https://api.allme.fyi"
 
@@ -176,6 +174,11 @@ CALL_OIDC_TOKEN = (
 CALL_OIDC_VERIFY = (
     "(oidc) jwt.decode — verifies the id_token against the JWKS: signature, issuer, audience "
     "and nonce; the claims shown are that verified token's"
+)
+CALL_OIDC_USERINFO = (
+    "OAuthClient.resolve_userinfo — reads GET /api/oauth/userinfo with the OIDC access token and "
+    "decrypts every claim value and attestation with the OAuth app private key, for values that "
+    "never reach the id_token regardless of delivery mode"
 )
 
 
@@ -368,6 +371,12 @@ class IdentityHandlers:
                     run = self._complete_oidc(run, code)
                 else:
                     run = self._complete_signin(run, code)
+            elif query_one(query, "error"):
+                # The authorize step can redirect here with an OAuth error instead of a code. Name
+                # it rather than falling through to the generic "missing code" message below.
+                desc = query_one(query, "error_description")
+                run["status"] = "failed"
+                run["error"] = query_one(query, "error") + (f": {desc}" if desc else "")
             else:
                 run["status"] = "failed"
                 run["error"] = "callback missing code / enrolled"
@@ -473,18 +482,50 @@ class IdentityHandlers:
         return run
 
     def _complete_oidc(self, run: Dict[str, Any], code: str) -> Dict[str, Any]:
+        """Complete an OIDC sign-in (scenario 5) via Authlib — id_token verified. Additionally
+        resolves userinfo through OAuthClient.resolve_userinfo with the access token Authlib
+        already obtained."""
         scenario_id = int(run.get("scenario") or 0)
         oidc = self._oidc_client_for(scenario_id)
         for _name in (CALL_OIDC_DISCOVERY, CALL_OIDC_TOKEN, CALL_OIDC_VERIFY):
             run["calls"] = add_call(run.get("calls"), _name)
-        claims = oidc.complete(
+        out = oidc.complete(
             code=code,
             state=str(run["state"]),
             code_verifier=str(run.get("verifier") or ""),
             nonce=str(run.get("nonce") or ""),
         )
+        result: Dict[str, Any] = {
+            "claims": out["claims"],
+            "values": {},
+            "values_cipher": {},
+            "attestations": {},
+            "values_gap": None,
+        }
+
+        access_token = str(out.get("access_token") or "")
+        if access_token:
+            run["calls"] = add_call(run.get("calls"), self._idw_build_call(scenario_id))
+            oauth = self._oauth_client_for(scenario_id)
+            run["calls"] = add_call(run.get("calls"), CALL_OIDC_USERINFO)
+            try:
+                resolved = oauth.resolve_userinfo(access_token)
+                values = dict(resolved["values"])
+                attestations = resolved["attestations"]
+                # A `verified: false` attestation is a MISMATCH between the delivered value and
+                # what was verified — the value must be rejected, never shown as though it
+                # answered the claim.
+                for slug, attestation in attestations.items():
+                    if attestation.get("verified", True) is False:
+                        values.pop(slug, None)
+                result["values"] = values
+                result["values_cipher"] = resolved["values_cipher"]
+                result["attestations"] = attestations
+            except ConfigError as exc:
+                result["values_gap"] = f"userinfo carried claim value(s) that could not be decrypted: {exc}"
+
         run["status"] = "done"
-        run["result"] = {"claims": claims}
+        run["result"] = result
         return run
 
     # ── SDK / OIDC client builders — built from the persisted config FILE ─────
