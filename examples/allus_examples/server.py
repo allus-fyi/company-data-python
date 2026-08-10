@@ -28,7 +28,7 @@ CONTRACT_VERSION = 3
 SDK = "python"
 
 _INT_ID_RE = re.compile(r"^\d+$")
-_SCENARIO_ROUTE_RE = re.compile(r"^/api/scenarios/([^/]+)/(config|start|enroll|clear)$")
+_SCENARIO_ROUTE_RE = re.compile(r"^/api/scenarios/([^/]+)/(config|start|enroll|cleanup|clear)$")
 _RUN_ROUTE_RE = re.compile(r"^/api/runs/([0-9a-f]{32})$")
 
 
@@ -152,6 +152,8 @@ class Server:
                 return self.company.config(scenario_id, body)
             if action == "start":
                 return self.company.start(scenario_id)
+            if action == "cleanup":
+                return self.company.cleanup(scenario_id)  # companydata:documents only
             if action == "clear":
                 return self.company.clear(scenario_id)
             # enroll is identity-only

@@ -88,6 +88,11 @@ CALL_PROCESS_CHANGES = (
     "before ack, at-least-once (dedup on Change.id), failures to the local dead-letter store"
 )
 CALL_CREATE_DOCUMENT = "Client.create_document — {label}"
+CALL_LIST_DOCUMENTS = (
+    "Client.list_documents — GET /api/company-data/documents: pages the service's documents "
+    "so cleanup finds everything it created"
+)
+CALL_DELETE_DOCUMENT = "Client.delete_document — DELETE /api/company-data/documents/{document_id}"
 CALL_WEBHOOK_STARTED = (
     "(webhook run started) — POST /webhook receives each delivery; every poll also drains the "
     "change feed as a fallback"
@@ -298,6 +303,31 @@ class CompanyDataHandlers:
             doc = client.create_document(**opts)
             docs.append({"index": len(docs) + 1, "label": spec["label"], "document_id": doc.id, "status": doc.status})
         return {"docs": docs}
+
+    # POST /api/scenarios/{id}/cleanup (companydata:documents only) — delete every document the
+    # documents scenario has created on this service, so a reused account can reset between runs
+    # (companydata:documents is additive: create_document mints a new document each run; nothing
+    # deletes a prior run's). Not part of the generic scenario dispatch: routed directly by the
+    # server, the same way /enroll is identity-only.
+    def cleanup(self, scenario_id: str) -> Response:
+        if scenario_id != DOCUMENTS:
+            return json_response({"error": "not_found"}, 404)
+        if not self.rt.has_config(scenario_id):
+            return json_response({"error": "not_configured"}, 409)
+        return self._data_run(scenario_id, self._do_cleanup_documents)
+
+    def _do_cleanup_documents(self, client: Client, calls: List[str]) -> Dict[str, Any]:
+        deleted = 0
+        while True:
+            calls.append(CALL_LIST_DOCUMENTS)
+            page = client.list_documents(limit=100, offset=0)
+            if not page:
+                break
+            for doc in page:
+                calls.append(CALL_DELETE_DOCUMENT.format(document_id=doc.id))
+                client.delete_document(doc.id)
+                deleted += 1
+        return {"deleted": deleted}
 
     # ── companydata:webhook — the accumulating run + public receiver ──────────
 
