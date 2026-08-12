@@ -321,6 +321,9 @@ class Change:
     ``request_id`` is set only on the service-initiated connect-request outcome
     events (``connection_request_accepted`` / ``connection_request_rejected``),
     correlating back to the request_id returned by :meth:`Client.send_connect_request`.
+    ``connection_id``/``message_id``/``person_public_key``/``message_body`` are set
+    only on ``message_received`` — a person's message to the service, decrypted with
+    the service private key; the event's ``created_at`` stays in ``raw``.
     """
 
     id: str
@@ -341,6 +344,10 @@ class Change:
     cancel_effective_date: Optional[str] = None  # set on a cancelled document_status_changed: ISO date the cancellation takes effect
     request_id: Optional[str] = None   # set on connection_request_accepted | connection_request_rejected
     public_key_sha256: Optional[str] = None  # set on key_rotated — SHA-256 fingerprint of the person's NEW public key
+    connection_id: Optional[str] = None  # set on message_received — the connection to reply/ack on
+    message_id: Optional[str] = None     # set on message_received — the ack boundary (up_to_message_id)
+    person_public_key: Optional[str] = None  # set on message_received — base64 SPKI to encrypt the reply to
+    message_body: Optional[str] = None   # set on message_received — the DECRYPTED message text
     verified: bool = False  # True iff a field_updated value is verified (hash matches the decrypted plaintext)
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
@@ -371,6 +378,16 @@ class Change:
                     binary_fetch=binary_fetch,
                 )
 
+        is_message = event == "message_received"
+        message_body: Optional[str] = None
+        if is_message:
+            # The message ciphertext is carried under ``body``, never ``value``: on every
+            # other event ``value`` means field ciphertext, which a message body is not.
+            # It is encrypted for the SERVICE key, so the ordinary decrypt opens it.
+            cipher = obj.get("body")
+            if cipher is not None:
+                message_body = decrypt_value(cipher)
+
         return cls(
             id=obj.get("id"),
             event=event,
@@ -396,6 +413,10 @@ class Change:
             if event in ("connection_request_accepted", "connection_request_rejected")
             else None,
             public_key_sha256=obj.get("public_key_sha256") if event == "key_rotated" else None,
+            connection_id=obj.get("connection_id") if is_message else None,
+            message_id=obj.get("message_id") if is_message else None,
+            person_public_key=obj.get("person_public_key") if is_message else None,
+            message_body=message_body,
             verified=_verified_from(obj, value),
             at=_parse_iso_dt(obj.get("at")),
             raw=obj,

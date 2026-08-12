@@ -110,6 +110,10 @@ class Change:
     slug: Optional[str]      # field_updated/field_deleted/consent_* only
     value: Any = None        # field_updated only; typed exactly like Value.value
     live: Optional[bool] = None  # field_updated only
+    connection_id: Optional[str] = None       # message_received only
+    message_id: Optional[str] = None          # message_received only — the ack boundary
+    person_public_key: Optional[str] = None   # message_received only — base64 SPKI for the reply
+    message_body: Optional[str] = None        # message_received only — the DECRYPTED text
     at: Optional[datetime] = None  # the change time (no separate updated_at on a change)
     raw: dict
 ```
@@ -123,6 +127,14 @@ class Change:
 | `field_updated` | `slug` + decrypted `value` (+ `live`); binary → a lazy `BinaryHandle` |
 | `field_deleted` | `slug`, no value |
 | `consent_accepted` / `consent_declined` | `slug` |
+| `message_received` | `connection_id`, `message_id`, `person_public_key` + `message_body` (the DECRYPTED message text); no slot. Person→company only — a broadcast raises no event |
+
+The event's ciphertext is carried under `body`. It is never `value`: on every other
+event `value` means field ciphertext, and a message body is not one.
+
+**Answering one.** `send_message` answers **201** with the created message carrying
+`message_id`, which is what it returns — hand that id, or the inbound event's `message_id`,
+to `mark_messages_read` as the acknowledgement boundary.
 
 `Change.id` is captured before the server's drain-delete, so it survives a
 crash + replay unchanged — dedup on it.

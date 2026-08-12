@@ -482,10 +482,11 @@ A change-feed / webhook event.
 | Attribute | Meaning |
 |-----------|---------|
 | `id` | **The stable server change-row id — your dedup key** (captured before the server delete). |
-| `event` | `connection_created`, `connection_deleted`, `field_updated`, `field_deleted`, `consent_accepted`, `consent_declined`, `document_status_changed`. |
+| `event` | `connection_created`, `connection_deleted`, `field_updated`, `field_deleted`, `consent_accepted`, `consent_declined`, `document_status_changed`, `message_received`. |
 | `person_id` | The person the change is about (may be `None`). |
 | `slug`, `value`, `live` | Present only on `field_updated`; `value` is typed exactly like `Value.value` (incl. a lazy `BinaryHandle` for binaries). Connection/consent/document events carry no slot/value. |
 | `document_id`, `status` | Present only on `document_status_changed` — which document moved lifecycle state and to what (no slug/value). See [Company documents](#company-documents). |
+| `connection_id`, `message_id`, `person_public_key`, `message_body` | Present only on `message_received` — a person messaged your service. `message_body` is the **decrypted** text. See [Messaging](#messaging). |
 | `at` | `datetime` of the change. (There is no separate `updated_at` on a change.) |
 
 ### `.raw`
@@ -817,6 +818,74 @@ def handle(change):
 
 client.process_changes(handle)
 ```
+
+---
+
+## Messaging
+
+Your service can hold a **conversation** with a connected person — the same
+messaging surface the person already uses, with your service as the counterpart.
+Two shapes:
+
+* **1-on-1** — `send_message(connection_id, text)`. **End-to-end encrypted**: the
+  SDK encrypts one copy to the person's public key and one to your service key
+  before anything leaves the process, so the person reads it in their app and you
+  can re-read your own outbound text. The platform stores ciphertext only.
+* **Broadcast** — `broadcast_message(text)`. One **plaintext** message to every
+  person connected to the service (one body cannot be single-key-encrypted to all
+  of them, exactly as for a broadcast document). It seeds each person's ordinary
+  1-on-1 thread; their reply comes back end-to-end encrypted.
+
+`send_message` answers **201** with the created message carrying `message_id`, and
+returns that id — the value you hand back as the acknowledgement boundary.
+
+Inbound messages arrive on the **changes pump / webhook** as a `message_received`
+event — a person→company message only. A broadcast raises no event of its own.
+
+```python
+def handle(change):
+    if change.event != "message_received":
+        return
+    print(change.person_id, change.message_body)   # already decrypted for you
+
+    # Reply on the same connection. person_public_key rides the event, so no
+    # second key lookup is needed.
+    client.send_message(
+        change.connection_id,
+        "Thanks — we're on it.",
+        person_public_key=change.person_public_key,
+    )
+
+    # Acknowledge what you handled. REQUIRED: without it the message stays
+    # unread forever, your unread count grows, and the person never sees a read
+    # receipt. Sending a reply does NOT acknowledge anything.
+    client.mark_messages_read(change.connection_id, change.message_id)
+
+client.process_changes(handle)
+```
+
+`mark_messages_read` is bounded by the boundary message: a message that arrived
+while you were working is **not** swept, and a repeat is a no-op. The boundary
+must be a message the person sent on that connection — anything else is refused
+with `ApiError("company_data.ack_boundary_invalid")` (400).
+
+```python
+# One plaintext announcement to everyone connected to the service.
+client.broadcast_message("We're closed on Friday.")
+```
+
+Refusals surface as `ApiError` carrying the platform `error_key`:
+
+| `error_key` | Status | Meaning |
+|-------------|--------|---------|
+| `messages.messaging_not_entitled` | 403 | The company's plan does not include messaging. |
+| `messages.not_connected` | 403 | The person is not connected to this service. |
+| `messages.messaging_suspended` | 403 | Messaging is suspended for this service (or the whole company). |
+| `messages.broadcast_suspended` | 403 | Broadcast alone is suspended for this service. |
+| `messages.encryption_required` | 400 | A 1-on-1 body was not a valid encrypted wrapper. |
+| `messages.broadcast_audience_too_large` | 422 | The service has more connections than a broadcast allows. |
+| `messages.rate_limited` | 429 | Too many 1-on-1 messages to the same person. |
+| `company_data.ack_boundary_invalid` | 400 | The ack boundary is not a message the person sent on that connection. |
 
 ---
 

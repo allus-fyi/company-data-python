@@ -79,6 +79,7 @@ _REQUEST_FIELDS = f"{_BASE}/request-fields"
 _LOGS = f"{_BASE}/logs"
 _DOCUMENTS = f"{_BASE}/documents"
 _CONNECT_REQUESTS = f"{_BASE}/connect-requests"
+_BROADCAST = f"{_BASE}/broadcast"  # POST — one plaintext message to every connection
 _FLOWS = f"{_BASE}/flows"          # POST /api/company-data/flows/{flowId}/runs
 _FLOW_RUNS = f"{_BASE}/flow-runs"  # list / get / answers / generate
 _KEYS = "/api/keys"
@@ -719,6 +720,103 @@ class Client:
             raise ApiError(0, "company_connections.request_failed", "no request_id in response")
         return str(rid)
 
+    # ── messaging (company ↔ person) ────────────────────────────────────────────
+
+    def send_message(
+        self,
+        connection_id: str,
+        text: str,
+        *,
+        person_public_key: Optional[str] = None,
+        share_code: Optional[str] = None,
+    ) -> str:
+        """Send a 1-on-1 message to the connected person → the new ``message_id``.
+
+        ``POST /api/company-data/connections/{connectionId}/messages``. The message is
+        end-to-end encrypted before it leaves the process: one copy for the PERSON
+        (``body``) and one for the SERVICE (``sender_body``), so the person reads it in
+        their app and this service can re-read its own outbound text. The platform
+        stores ciphertext only. The route answers 201 with the created message carrying
+        ``message_id`` — the acknowledgement boundary :meth:`mark_messages_read` takes.
+
+        ``person_public_key`` is the base64 SPKI carried on the ``message_received``
+        event — pass it to answer without a second key lookup. Without it the key is
+        resolved from the connection's ``share_code`` (or an explicit ``share_code=``).
+        Config-only key handling is unchanged: a recipient PUBLIC key is neither a
+        secret nor a configured key.
+
+        Refusals arrive as :class:`ApiError` with the platform ``error_key``:
+        ``messages.messaging_not_entitled`` / ``messages.messaging_suspended`` /
+        ``messages.not_connected`` (403), ``messages.encryption_required`` (400),
+        ``messages.rate_limited`` (429).
+        """
+        cid = str(connection_id or "").strip()
+        if not cid:
+            raise ConfigError("connection_id is required")
+        plain = "" if text is None else str(text)
+        if not plain.strip():
+            raise ConfigError("text is required")
+
+        if person_public_key:
+            person_key = load_public_key(str(person_public_key))
+        else:
+            sc = share_code or self._resolve_share_code(cid, None)
+            person_key = self._recipient_public_key(sc)
+
+        body = {
+            # Both copies travel as JSON STRINGS — the message columns are text and the
+            # API tells ciphertext from plaintext by looking for the wrapper marker.
+            "body": json.dumps(encrypt_for_public_key(plain, person_key)),
+            "sender_body": json.dumps(encrypt_for_public_key(plain, self._service_public_key())),
+        }
+        res = self._http.post(f"{_CONNECTIONS}/{cid}/messages", json_body=body)
+        mid = _message_id(res)
+        if not mid:
+            raise ApiError(0, "messages.send_failed", "no message_id in response")
+        return mid
+
+    def broadcast_message(self, text: str) -> Any:
+        """Send one PLAINTEXT message to every person connected to this service.
+
+        ``POST /api/company-data/broadcast``. A broadcast is deliberately not
+        encrypted — one body cannot be single-key-encrypted to every connection — so
+        it is the one message the platform can read, exactly as a broadcast document
+        is. It seeds each recipient's ordinary 1-on-1 thread, and a reply comes back
+        end-to-end encrypted as a ``message_received`` event.
+
+        Returns the API response. Refusals arrive as :class:`ApiError`:
+        ``messages.broadcast_audience_too_large`` (422, over the connection cap),
+        ``messages.broadcast_suspended`` / ``messages.messaging_suspended`` /
+        ``messages.messaging_not_entitled`` (403).
+        """
+        plain = "" if text is None else str(text)
+        if not plain.strip():
+            raise ConfigError("text is required")
+        return self._http.post(_BROADCAST, json_body={"body": plain})
+
+    def mark_messages_read(self, connection_id: str, up_to_message_id: str) -> None:
+        """Acknowledge the inbound messages you have handled, up to a boundary.
+
+        ``POST /api/company-data/connections/{connectionId}/messages/read`` with
+        ``{up_to_message_id}``. Only the person's messages on THIS connection at or
+        before that message are marked read; one that arrived while you were working
+        stays unread, so nothing is swept unhandled. Idempotent — a repeat is a no-op.
+
+        Sending a reply does NOT acknowledge anything; a service that never acks lets
+        its unread grow. The boundary must be a message the PERSON sent on this
+        connection: anything else is refused with :class:`ApiError`
+        ``company_data.ack_boundary_invalid`` (400).
+        """
+        cid = str(connection_id or "").strip()
+        if not cid:
+            raise ConfigError("connection_id is required")
+        boundary = str(up_to_message_id or "").strip()
+        if not boundary:
+            raise ConfigError("up_to_message_id is required")
+        self._http.post(
+            f"{_CONNECTIONS}/{cid}/messages/read", json_body={"up_to_message_id": boundary}
+        )
+
     # ── contract-flow runs (company side — the company is a bound party) ─────────
 
     def trigger_flow_run(self, flow_id: str, *, connection_id: str, bindings: dict) -> FlowRun:
@@ -1015,6 +1113,20 @@ def _doc_obj(body: Any) -> dict:
             return inner
         return body
     return {}
+
+
+def _message_id(body: Any) -> Optional[str]:
+    """Pull the new message's id out of a send response.
+
+    Accepts the id at the top level or nested under ``message``, and under either
+    ``message_id`` or ``id``.
+    """
+    obj = body if isinstance(body, dict) else {}
+    inner = obj.get("message")
+    if isinstance(inner, dict):
+        obj = inner
+    mid = obj.get("message_id") or obj.get("id")
+    return str(mid) if mid else None
 
 
 def _data_uri(file_bytes: bytes, mime: Optional[str]) -> str:
