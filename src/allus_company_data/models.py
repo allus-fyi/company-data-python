@@ -5,9 +5,9 @@ that turn a *hardened* API JSON object (slug-keyed ``values``; NO person source
 field) into typed Python objects, decrypting ciphertext via the
 injected crypto core.
 
-    RequestField { slug, label, type, one_time, mandatory }   # YOUR request config
+    RequestField { slug, label, type, one_time, mandatory, verified, verified_max_age_days }
     Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
-    Value        { value, live, updated_at }
+    Value        { value, live, updated_at, verified, verified_at, verified_expires_at }
     Change       { id, event, person_id, share_code?, slug?, value?, live?, at }   # id = stable dedup key
     LogEntry     { type, message, metadata, at }
 
@@ -17,7 +17,8 @@ Typed values:
 * ``address``/``bank``/``creditcard``  → ``dict`` (the decrypted plaintext is a
   JSON object string → parsed)
 * ``date``/``date_of_birth``           → :class:`datetime.date`
-* ``photo``/``document``/``legal_document`` → a lazy :class:`BinaryHandle`
+* ``photo``/``document``/``legal_document`` and the ID-document subtypes
+  ``passport``/``photo_id``/``drivers_license`` → a lazy :class:`BinaryHandle`
   (``.bytes()`` fetches the slot file endpoint, decrypts, parses the envelope,
   base64-decodes the ``full``/``file`` data URI)
 
@@ -41,8 +42,16 @@ from .crypto import BinaryFetchResult, BinaryHandle, DecryptError, hash_matches
 
 # Field types whose decrypted plaintext is a JSON object → a parsed dict.
 STRUCTURED_TYPES = ("address", "bank", "creditcard")
-# Field types whose value is a lazy binary handle (served as a value_url).
-BINARY_TYPES = ("photo", "document", "legal_document")
+# Field types whose value is a lazy binary handle (served as a value_url) — the
+# ID-document subtypes are children of ``legal_document`` and share its envelope.
+BINARY_TYPES = (
+    "photo",
+    "document",
+    "legal_document",
+    "passport",
+    "photo_id",
+    "drivers_license",
+)
 # Field types whose decrypted plaintext is an ISO date.
 DATE_TYPES = ("date", "date_of_birth")
 
@@ -65,6 +74,32 @@ def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
+        return None
+
+
+def expiry_passed(value: Any) -> bool:
+    """Whether a verification expiry stamp has already passed.
+
+    Absent → ``False``: a verification with no expiry never lapses. Present but
+    unparseable → ``True``: an expiry that cannot be evaluated cannot be used to claim
+    the value is still verified today.
+    """
+    if value is None or value == "":
+        return False
+    when = _parse_iso_dt(str(value))
+    if when is None:
+        return True
+    now = datetime.now(when.tzinfo) if when.tzinfo is not None else datetime.now()
+    return when <= now
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    """Coerce a JSON number or an XML numeric string into an int, or None."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
         return None
 
 
@@ -102,6 +137,13 @@ class RequestField:
     # Which customer TYPE this request row applies to: "person" | "company" | "both"
     # (B2B). Absent on an older API → None (treat as "person").
     audience: Optional[str] = None
+    # This row DEMANDS a verified answer: only a value the person verified satisfies it,
+    # and an unverified candidate is refused at the accepting act rather than downgraded.
+    verified: bool = False
+    # The oldest verification the demand accepts, in days; None = no age limit. Enforced
+    # at the accepting act only — a standing live link is not re-enforced afterwards, so
+    # apply your own policy from each Value's ``verified_at``.
+    verified_max_age_days: Optional[int] = None
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -116,6 +158,8 @@ class RequestField:
                 or _coerce_bool(obj.get("mandatory_connected"))
             ),
             audience=obj.get("audience"),
+            verified=bool(_coerce_bool(obj.get("verified"))),
+            verified_max_age_days=_coerce_int(obj.get("verified_max_age_days")),
             raw=obj,
         )
 
@@ -130,12 +174,20 @@ class RequestField:
 
 
 def _verified_from(obj: dict, plaintext) -> bool:
-    """Recompute the verified flag from the just-decrypted plaintext (email str only)."""
+    """Recompute the verified flag from the just-decrypted plaintext (text values only).
+
+    Two conditions, both required: the hash recomputes over the exact plaintext, AND the
+    verification has not lapsed (``verified_expires_at`` absent or still in the future).
+    A document-backed verification lapses when the document itself expires, so a stale
+    binding reads false here without any lookup.
+    """
     if not isinstance(plaintext, str):
         return False
     vhash = obj.get("verified_hash")
     vsalt = obj.get("verified_salt")
     if not vhash or not vsalt:
+        return False
+    if expiry_passed(obj.get("verified_expires_at")):
         return False
     return hash_matches(vsalt, vhash, plaintext)
 
@@ -153,7 +205,13 @@ class Value:
     value: Any
     live: bool
     updated_at: Optional[datetime] = None
-    verified: bool = False  # True iff the value carries verified metadata AND the hash matches
+    verified: bool = False  # True iff the hash matches the plaintext AND the verification has not lapsed
+    # When the person's answering field was verified. None when the value carries no
+    # verification. It is a stamp, not a promise about today — read it with ``verified``.
+    verified_at: Optional[datetime] = None
+    # When that verification lapses (a document-backed verification dies with the
+    # document). None = it does not lapse. Past → ``verified`` reads False.
+    verified_expires_at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -176,7 +234,15 @@ class Value:
             decrypt_value=decrypt_value,
             binary_fetch=binary_fetch,
         )
-        return cls(value=typed, live=live, updated_at=updated_at, verified=_verified_from(obj, typed), raw=obj)
+        return cls(
+            value=typed,
+            live=live,
+            updated_at=updated_at,
+            verified=_verified_from(obj, typed),
+            verified_at=_parse_iso_dt(obj.get("verified_at")),
+            verified_expires_at=_parse_iso_dt(obj.get("verified_expires_at")),
+            raw=obj,
+        )
 
 
 def _typed_value(
@@ -348,7 +414,9 @@ class Change:
     message_id: Optional[str] = None     # set on message_received — the ack boundary (up_to_message_id)
     person_public_key: Optional[str] = None  # set on message_received — base64 SPKI to encrypt the reply to
     message_body: Optional[str] = None   # set on message_received — the DECRYPTED message text
-    verified: bool = False  # True iff a field_updated value is verified (hash matches the decrypted plaintext)
+    verified: bool = False  # True iff a field_updated value's hash matches AND the verification has not lapsed
+    verified_at: Optional[datetime] = None         # when the answering field was verified (None when unverified)
+    verified_expires_at: Optional[datetime] = None  # when that verification lapses (None = it does not)
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -418,6 +486,8 @@ class Change:
             person_public_key=obj.get("person_public_key") if is_message else None,
             message_body=message_body,
             verified=_verified_from(obj, value),
+            verified_at=_parse_iso_dt(obj.get("verified_at")),
+            verified_expires_at=_parse_iso_dt(obj.get("verified_expires_at")),
             at=_parse_iso_dt(obj.get("at")),
             raw=obj,
         )

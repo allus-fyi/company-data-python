@@ -27,13 +27,17 @@ import requests
 from .config import Config
 from .crypto import decrypt, hash_matches, load_private_key
 from .errors import ApiError, AuthError, ConfigError
+from .models import expiry_passed
 
 # The hosted consent surface. The native apps claim this https link (universal/app
 # link); the web app is the no-app fallback. Overridable for non-prod hosts.
 DEFAULT_AUTHORIZE_URL = "https://web.allme.fyi/auth"
 
-# Binary field types can't be requested as claims (they can't be encrypted inline).
-_NON_CLAIMABLE = frozenset({"photo", "document", "legal_document"})
+# Binary field types can't be requested as claims (they can't be encrypted inline) —
+# the ID-document subtypes are binary too, so no ID document ever reaches this surface.
+_NON_CLAIMABLE = frozenset(
+    {"photo", "document", "legal_document", "passport", "photo_id", "drivers_license"}
+)
 _MAX_CLAIMS = 15
 _MODES = frozenset({"signin", "one_time", "connect", "2fa_enroll"})
 _RESPONSE_MODES = frozenset({"redirect", "detached"})
@@ -58,6 +62,11 @@ class Claim:
     request is refused with ``invalid_request`` — that leg carries no source row id, so the
     server could neither enforce the requirement nor attest it, and an unhonourable
     requirement is refused rather than quietly dropped.
+
+    ``verified_max_age_days`` narrows that demand to a RECENT verification. The app's registered
+    configuration is a FLOOR and a request may only TIGHTEN it: the effective limit is the minimum
+    of the two stated ages, and an omitted age tightens nothing — which is why omitting it sends
+    nothing at all rather than an explicit null. Below 1 is refused at the call.
     """
 
     #: REQUIRED — the claim's identity on the wire; ``values``/``attestations`` are keyed by it.
@@ -68,6 +77,8 @@ class Claim:
     #: Only a verified answer satisfies this claim. OIDC flow + verifiable types only.
     verified: bool = False
     label: Optional[str] = None
+    #: Narrows ``verified`` to a verification no older than this many days; None = no age limit.
+    verified_max_age_days: Optional[int] = None
 
 
 @dataclass
@@ -86,15 +97,21 @@ class Attestation:
 
     ``verified_at`` carries the snapshot caveat: it attests the value as verified AT THAT
     MOMENT, not verified today. A field loses its verification whenever it is re-saved.
+    ``verified_expires_at`` is when that verification lapses on its own (a document-backed
+    verification dies with the document); an EXPIRED attestation is unverified, so
+    ``verified`` already reads False once it has passed.
     """
 
-    #: Recomputed here: sha256(salt ‖ plaintext) == hash, constant-time. False = MISMATCH → reject.
+    #: Recomputed here: sha256(salt ‖ plaintext) == hash, constant-time, AND not expired.
+    #: False = MISMATCH or lapsed → reject.
     verified: bool
     #: Lowercase hex.
     hash: str
     #: Lowercase hex.
     salt: str
     verified_at: str
+    #: When the verification lapses; None when it does not.
+    verified_expires_at: Optional[str] = None
 
 
 class OAuthClient:
@@ -192,6 +209,14 @@ class OAuthClient:
                 entry["required"] = True
             if c.verified:
                 entry["verified"] = True
+            if c.verified_max_age_days is not None:
+                # Refused HERE for the same reason a nameless claim is: the API rejects the whole
+                # request over it, and the integration error belongs at the call that made it.
+                if c.verified_max_age_days < 1:
+                    raise ConfigError(
+                        f"claim {name!r}: verified_max_age_days must be at least 1"
+                    )
+                entry["verified_max_age_days"] = c.verified_max_age_days
             if c.label:
                 entry["label"] = c.label
             out.append(entry)
@@ -328,13 +353,17 @@ class OAuthClient:
             salt = str(parsed.get("salt") or "")
             if not digest or not salt:
                 continue
+            expires_at = parsed.get("verified_expires_at")
             out[slug] = Attestation(
                 # Recomputed here, constant-time, over the plaintext just decrypted — never
                 # trusted from the server. False = the delivered value is NOT the verified one.
-                verified=hash_matches(salt, digest, plaintext),
+                # An attestation whose expiry has passed attests nothing today, so it reads
+                # False as well: an expired attestation is unverified, not "not attested".
+                verified=hash_matches(salt, digest, plaintext) and not expiry_passed(expires_at),
                 hash=digest,
                 salt=salt,
                 verified_at=str(parsed.get("verified_at") or ""),
+                verified_expires_at=str(expires_at) if expires_at else None,
             )
         return out
 

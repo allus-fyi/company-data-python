@@ -14,9 +14,11 @@ Returned by `client.request_fields()`.
 class RequestField:
     slug: str          # the stable, company-set key — the contract for value access
     label: str         # the human label (rename freely; the slug stays)
-    type: str          # email|phone|url|text|address|bank|creditcard|date|date_of_birth|photo|document|legal_document
+    type: str          # email|phone|url|text|address|bank|creditcard|date|date_of_birth|photo|document|legal_document|passport|photo_id|drivers_license
     one_time: bool     # a one-time snapshot vs a live (auto-updating) answer
     mandatory: bool    # mandatory-to-provide OR mandatory-to-stay-connected (the API's two flags, folded)
+    verified: bool     # this row DEMANDS a verified answer (mutually exclusive with one_time)
+    verified_max_age_days: Optional[int]  # oldest verification accepted; None = no age limit
     raw: dict
 ```
 
@@ -51,6 +53,9 @@ class Value:
     value: Any                        # typed plaintext (see below)
     live: bool                        # True = "keep connected" (auto-updates); False = one-time snapshot
     updated_at: Optional[datetime]    # when this answer last changed
+    verified: bool                    # the hash recomputes over the plaintext AND the verification has not lapsed
+    verified_at: Optional[datetime]        # when the answering field was verified
+    verified_expires_at: Optional[datetime]  # when that verification lapses; None = it does not
     raw: dict
 ```
 
@@ -61,7 +66,7 @@ class Value:
 | `email`, `phone`, `url`, `text` | `str` | The decrypted plaintext. |
 | `address`, `bank`, `creditcard` | `dict` | The decrypted plaintext is a JSON object → parsed. A non-JSON structured value raises `DecryptError`. |
 | `date`, `date_of_birth` | `datetime.date` | Parsed from ISO `YYYY-MM-DD` (the leading 10 chars); falls back to the raw string if unparseable. |
-| `photo`, `document`, `legal_document` | `BinaryHandle` | Lazy — nothing fetched/decrypted until `.bytes()`/`.save()`. |
+| `photo`, `document`, `legal_document`, `passport`, `photo_id`, `drivers_license` | `BinaryHandle` | Lazy — nothing fetched/decrypted until `.bytes()`/`.save()`. The last three are ID-document subtypes of `legal_document` and share its envelope. |
 | unanswered / no value | `None` | The slot has no answer. |
 
 ## `BinaryHandle`
@@ -114,6 +119,9 @@ class Change:
     message_id: Optional[str] = None          # message_received only — the ack boundary
     person_public_key: Optional[str] = None   # message_received only — base64 SPKI for the reply
     message_body: Optional[str] = None        # message_received only — the DECRYPTED text
+    verified: bool = False       # field_updated only; hash recomputes AND the verification has not lapsed
+    verified_at: Optional[datetime] = None         # when the answering field was verified
+    verified_expires_at: Optional[datetime] = None  # when that verification lapses; None = it does not
     at: Optional[datetime] = None  # the change time (no separate updated_at on a change)
     raw: dict
 ```

@@ -379,9 +379,9 @@ app you'll almost always use the client methods. See [Webhooks](#webhooks).
 You work with these objects and nothing else (`from allus_company_data import …`):
 
 ```text
-RequestField { slug, label, type, one_time, mandatory }     # YOUR request config
+RequestField { slug, label, type, one_time, mandatory, verified, verified_max_age_days }
 Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
-Value        { value, live, updated_at }
+Value        { value, live, updated_at, verified, verified_at, verified_expires_at }
 Change       { id, event, person_id, slug?, value?, live?, document_id?, status?, at }
 Document     { id, kind, name, description, status, payload_kind, is_private, value, metadata, created_at, updated_at }
 LogEntry     { type, message, metadata, at }
@@ -401,6 +401,9 @@ source slug, no `field_id`, not even via `.raw`.
 | `value` | The typed plaintext (see the table below). |
 | `live` | `True` if the person chose "keep connected" (auto-updates); `False` for a one-time snapshot. |
 | `updated_at` | `datetime` of when this answer last changed (per-answer, rides on the `Value`). |
+| `verified` | `True` only when the verification hash recomputes over the decrypted plaintext **and** the verification has not lapsed. Absent metadata reads `False`, which means "not attested", not "wrong". |
+| `verified_at` | `datetime` the answering field was verified, or `None`. A stamp, not a promise about today. |
+| `verified_expires_at` | `datetime` that verification lapses, or `None` when it does not. A document-backed verification dies with the document; once this is past, `verified` reads `False`. |
 
 ### Value types (from the field's `type`)
 
@@ -410,7 +413,7 @@ source slug, no `field_id`, not even via `.raw`.
 | `country`, `nationality` | `str` — an ISO 3166-1 alpha-2 code (e.g. `"US"`, `"NL"`); not a display name |
 | `address`, `bank`, `creditcard` | `dict` — the decrypted plaintext is a JSON object, parsed for you |
 | `date`, `date_of_birth` | `datetime.date` (falls back to the raw string if it can't be parsed) |
-| `photo`, `document`, `legal_document` | a lazy `BinaryHandle` — see below |
+| `photo`, `document`, `legal_document`, `passport`, `photo_id`, `drivers_license` | a lazy `BinaryHandle` — see below. The last three are ID-document subtypes of `legal_document`. |
 
 `country`/`nationality` values are 2-letter ISO codes, and an `address`'s
 `country`/`state` sub-fields are an ISO alpha-2 code / USPS 2-letter state code
@@ -487,6 +490,7 @@ A change-feed / webhook event.
 | `slug`, `value`, `live` | Present only on `field_updated`; `value` is typed exactly like `Value.value` (incl. a lazy `BinaryHandle` for binaries). Connection/consent/document events carry no slot/value. |
 | `document_id`, `status` | Present only on `document_status_changed` — which document moved lifecycle state and to what (no slug/value). See [Company documents](#company-documents). |
 | `connection_id`, `message_id`, `person_public_key`, `message_body` | Present only on `message_received` — a person messaged your service. `message_body` is the **decrypted** text. See [Messaging](#messaging). |
+| `verified`, `verified_at`, `verified_expires_at` | Present on `field_updated`, with the same meaning as on `Value`. |
 | `at` | `datetime` of the change. (There is no separate `updated_at` on a change.) |
 
 ### `.raw`
@@ -1058,6 +1062,11 @@ repeat login), a field `type`, an optional `suggest`ed slug, `required`, and `ve
 failing at the API. `verified` is accepted only on the OIDC flow and only for a type allme can verify
 (today `email`); elsewhere it is refused with `invalid_request` rather than quietly dropped.
 
+`verified_max_age_days` narrows a `verified` claim to a RECENT verification, and the merge is **tighten-only**: the app's
+registered configuration is a FLOOR, a request may only tighten it, and the effective limit is the minimum
+of the two stated ages. An omitted age tightens nothing — omitting it sends nothing at all, never an
+explicit null — and a value below 1 raises `ConfigError` at the call.
+
 `complete_sign_in` returns `{user, mode, two_factor, values, values_cipher, attestations}`.
 * `user.sub` **is** the person's share code and equals `share_code` — byte-identical to the id_token's
   `sub`. `display_name` is gone: ask for a `name` claim and read `values["name"]`.
@@ -1067,10 +1076,13 @@ failing at the API. `verified` is accepted only on the OIDC flow and only for a 
   that carries no ciphertext (`signin`, or `plaintext` delivery) — that emptiness is the honest answer.
 * `attestations` is an additive sibling map keyed by the same claim name, present only for a `verified`
   claim under encrypted delivery. Each entry carries a `verified` boolean **the SDK computes itself**,
-  in constant time, over the plaintext it just decrypted — plus the raw `hash`/`salt`/`verifiedAt`.
+  in constant time, over the plaintext it just decrypted — plus the raw `hash`/`salt`/`verified_at`/
+  `verified_expires_at`.
   **A slug ABSENT from the map is "not attested", never "wrong"** (treat that value as unverified);
-  **an entry present with `verified` false is a MISMATCH and you must reject the value.** `verifiedAt`
-  attests the value as verified *at that moment*, not verified today.
+  **an entry present with `verified` false is a MISMATCH and you must reject the value.** `verified_at`
+  attests the value as verified *at that moment*, not verified today; `verified_expires_at` is when that
+  verification lapses on its own (`None` = it does not), and an **expired attestation is unverified** —
+  the computed `verified` already reads false once it has passed.
 
 **`resolve_userinfo(access_token, fallback_mode=None)`** is the second half of `complete_sign_in` — the
 `userinfo` read + decrypt + attest, without the token exchange — for a caller whose exchange already ran
