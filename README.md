@@ -1008,6 +1008,18 @@ token + its expiry; refresh is automatic. A mid-flight 401 triggers exactly one
 refresh-and-retry, then `AuthError`. The token is scoped server-side to **one**
 service, so every call is implicitly that service's data.
 
+**Regions.** The configured `api_url` is the platform's global front door and also the
+starting point for every request, including the token request. A `client_credentials`
+token is minted at your company's **home region**, and the token response names that
+region's base in an `api_url` member — the SDK stores it and sends every subsequent
+request there, token requests included, because the token is valid only at that region
+and a company that moves region is followed by the next mint. A data call that still
+reaches the front door is refused with `421` + `error_key: region.rebase_required`,
+carrying the same `api_url`; the SDK stores it and retries the call exactly once. The SDK
+does not validate a server-returned `api_url` against anything — it stores the base the
+server names and uses it. An absent or empty `api_url` is never stored and the response
+surfaces as the error it is.
+
 **Slug resolution.** `request_fields()` is fetched once and cached; its slug→type
 map types every value (so `address` parses to a dict, `photo` becomes a lazy
 binary handle, etc.). The connection/changes endpoints return values keyed by

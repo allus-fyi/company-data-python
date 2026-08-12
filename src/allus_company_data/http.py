@@ -8,6 +8,10 @@ It owns:
   ``{api_url}/oauth2/token`` and caches the bearer token + its expiry. Refresh is
   automatic and transparent; a 401 mid-flight triggers exactly one
   refresh-and-retry, then surfaces as :class:`AuthError`.
+* **Region** — the configured ``api_url`` is the global front door and the token
+  is minted at the client's home region, whose base the token response returns as
+  ``api_url``. Every call other than the token request and the region list is sent
+  to that home base. See :meth:`HttpClient._rebase_to`.
 * **Format** — sets ``Accept`` per ``config.format`` (``application/json`` or
   ``application/xml``) and parses the body accordingly. The XML parser mirrors
   the platform serializer: a ``<response>`` root, int-keyed lists rendered as
@@ -44,6 +48,12 @@ _DEFAULT_MAX_RETRIES_429 = 3
 _DEFAULT_BACKOFF_S = 1.0
 _MAX_BACKOFF_S = 60.0
 
+# The response member (token success body and 421 refusal body alike) naming the
+# home-region base.
+_REGION_BASE_MEMBER = "api_url"
+# The front door's refusal of a data route: rebase to the named base and replay.
+_REBASE_ERROR_KEY = "region.rebase_required"
+
 
 class HttpClient:
     """Authenticated JSON/XML transport for the company-data API."""
@@ -65,6 +75,9 @@ class HttpClient:
         self._clock = clock
         self._max_retries_429 = max_retries_429
 
+        # ``_api_url`` is the base every request goes to, including the token request.
+        # Starts at the configured value; every rebase moves it. Clients do not
+        # validate a server-returned base against anything — they store it and use it.
         self._api_url = config.api_url.rstrip("/")
         self._token: Optional[str] = None
         self._token_expiry: float = 0.0  # monotonic clock deadline
@@ -75,7 +88,14 @@ class HttpClient:
         return self._token is not None and self._clock() < self._token_expiry
 
     def _fetch_token(self) -> str:
-        """POST the client credentials to ``/oauth2/token`` and cache the result."""
+        """POST the client credentials to ``/oauth2/token`` and cache the result.
+
+        Goes to the CURRENT base, exactly like every other call — once a token
+        response has named a home base, subsequent token requests go there too, the
+        same as the data calls they sit beside. The configured value is only the
+        starting point, for the first call of a process and the fallback when
+        nothing has been stored yet.
+        """
         url = f"{self._api_url}/oauth2/token"
         data = {
             "grant_type": "client_credentials",
@@ -116,7 +136,30 @@ class HttpClient:
             expires_in = 3600.0
         self._token = str(access_token)
         self._token_expiry = self._clock() + max(0.0, expires_in - _TOKEN_EXPIRY_SKEW_S)
+        # The token is minted at the client's home region and only validates there, so
+        # the base the response names is where every company-data call must go from
+        # here on.
+        self._rebase_to(body.get(_REGION_BASE_MEMBER))
         return self._token
+
+    # ── region ──────────────────────────────────────────────────────────────
+
+    def _rebase_to(self, candidate: Any) -> bool:
+        """Point subsequent requests — including the next token request — at ``candidate``.
+
+        Returns ``True`` only when the base actually MOVED. A candidate that is absent,
+        not a string, empty, or equal to the current base is not stored and returns
+        ``False``. Nothing here validates the candidate against a fetched region list:
+        the SDK stores the base the server names and uses it, exactly as every
+        first-party client does.
+        """
+        if not isinstance(candidate, str):
+            return False
+        base = candidate.strip().rstrip("/")
+        if base == "" or base == self._api_url:
+            return False
+        self._api_url = base
+        return True
 
     def _bearer(self, force_refresh: bool = False) -> str:
         if force_refresh or not self._token_valid():
@@ -199,13 +242,15 @@ class HttpClient:
         :meth:`get_response`) returns the response object itself, headers included —
         auth/refresh/429 handling is unchanged in both cases.
         """
-        url = self._url(path)
         wants_xml = self.wants_xml
         accept = "application/xml" if wants_xml else "application/json"
 
         retries_429 = 0
         refreshed_401 = False
+        rebased_421 = False
         while True:
+            # Resolved per attempt: a 421 rebase moves the base under the next one.
+            url = self._url(path)
             token = self._bearer(force_refresh=False)
             headers = {"Authorization": f"Bearer {token}", "Accept": accept}
             body_kwargs: dict = {}
@@ -243,6 +288,20 @@ class HttpClient:
                     + (f" [{error_key}]" if error_key else "")
                     + (f": {message}" if message else "")
                 )
+
+            if status == 421:
+                # The front door serves no data route: it names the caller's home base
+                # and expects the call there. Rebase once and replay; a second 421
+                # surfaces.
+                error_key, message, details = _extract_error(resp)
+                if (
+                    not rebased_421
+                    and error_key == _REBASE_ERROR_KEY
+                    and self._rebase_to(details.get(_REGION_BASE_MEMBER))
+                ):
+                    rebased_421 = True
+                    continue
+                raise ApiError(status, error_key, message, details)
 
             if status == 429:
                 error_key, message, details = _extract_error(resp)
