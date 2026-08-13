@@ -31,6 +31,7 @@ from __future__ import annotations
 import time
 import xml.etree.ElementTree as ET
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -150,8 +151,7 @@ class HttpClient:
         Returns ``True`` only when the base actually MOVED. A candidate that is absent,
         not a string, empty, or equal to the current base is not stored and returns
         ``False``. Nothing here validates the candidate against a fetched region list:
-        the SDK stores the base the server names and uses it, exactly as every
-        first-party client does.
+        the SDK stores the base the server names and uses it.
         """
         if not isinstance(candidate, str):
             return False
@@ -249,9 +249,11 @@ class HttpClient:
         refreshed_401 = False
         rebased_421 = False
         while True:
-            # Resolved per attempt: a 421 rebase moves the base under the next one.
-            url = self._url(path)
+            # Resolved per attempt, AFTER the bearer call: the first _bearer() of a process
+            # mints the token and rebases from its response, so the base a fresh token was
+            # just fetched under is the base this request must go to as well.
             token = self._bearer(force_refresh=False)
+            url = self._url(path)
             headers = {"Authorization": f"Bearer {token}", "Accept": accept}
             body_kwargs: dict = {}
             if raw_body is not None:
@@ -322,9 +324,21 @@ class HttpClient:
             raise ApiError(status, error_key, message, details)
 
     def _url(self, path: str) -> str:
+        """Resolve ``path`` against the CURRENT base. An already-absolute ``path`` (the lazy
+        binary handle's server-supplied ``value_url``) is reduced to its path+query and
+        rebuilt against the current base too — so a value_url minted before a rebase, or
+        replayed on a 421 retry after one, still lands at the base every other request now
+        uses.
+        """
         if path.startswith("http://") or path.startswith("https://"):
-            return path
+            path = self._path_and_query(path)
         return self._api_url + ("" if path.startswith("/") else "/") + path
+
+    @staticmethod
+    def _path_and_query(absolute_url: str) -> str:
+        """The path + query + fragment portion of an absolute URL, dropping scheme and host."""
+        parts = urlsplit(absolute_url)
+        return urlunsplit(("", "", parts.path or "/", parts.query, parts.fragment))
 
     @property
     def wants_xml(self) -> bool:
