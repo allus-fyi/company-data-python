@@ -676,7 +676,14 @@ class Client:
         return raw  # broadcast / plaintext bytes
 
     def update_document_status(self, document_id: str, status: str) -> Document:
-        """Set a document's lifecycle status (offering|ready_to_sign|active|active_but_ending|ended)."""
+        """Set a document's lifecycle status (offering|ready_to_sign|active|active_but_ending|ended).
+
+        `waiting` is read-only — stamped by a contract-flow run on an unsigned run-participant
+        copy, never a value to write. Raises with `error_key='documents.run_managed'` (409) when
+        the document is a contract-flow run-participant document and its current status is
+        `waiting`, `ready_to_sign` or `offering`: that status moves only through flow generation,
+        the run's own advance, sign/accept, or a run cancel/decline.
+        """
         body = self._http.put(f"{_DOCUMENTS}/{document_id}", json_body={"status": status})
         return Document.from_api(_doc_obj(body), decrypt_value=self._decrypt_value)
 

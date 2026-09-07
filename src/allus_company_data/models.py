@@ -564,6 +564,10 @@ class Document:
     requires_signature: bool = False
     requires_acceptance: bool = False
     signatures: list = field(default_factory=list)  # contract audit trail (action/method/content_sha256/...)
+    # Present only on a contract-flow run-participant document: the run's ordered signature
+    # summary, one entry per participant owing an act — each
+    # {party_key, document_id, position, status, action, acted_at}. None on any other document.
+    run_signatures: Optional[list] = None
     _decrypt_value: Optional[DecryptValue] = field(default=None, repr=False)
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -596,6 +600,7 @@ class Document:
             requires_signature=bool(_coerce_bool(obj.get("requires_signature"))),
             requires_acceptance=bool(_coerce_bool(obj.get("requires_acceptance"))),
             signatures=obj.get("signatures") or [],
+            run_signatures=obj.get("run_signatures"),
             _decrypt_value=decrypt_value, raw=obj,
         )
 
@@ -639,6 +644,10 @@ class FlowRun:
     reference_date: Optional[str] = None  # immutable run "today" (raw YYYY-MM-DD string)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Every party the run binds, the owning company included (flows.html §5a/§9 item 12).
+    # `connection_id` above names only the PRIMARY counterparty, so a multi-actor run's other
+    # counterparties are reachable only here.
+    participants: List["FlowRunParticipant"] = field(default_factory=list)
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -686,7 +695,45 @@ class FlowRun:
             reference_date=obj.get("reference_date"),
             created_at=_parse_iso_dt(obj.get("created_at")),
             updated_at=_parse_iso_dt(obj.get("updated_at")),
+            participants=[FlowRunParticipant.from_api(p) for p in (obj.get("participants") or []) if isinstance(p, dict)],
             raw=obj,
+        )
+
+
+@dataclass
+class FlowRunParticipant:
+    """One participant's row on a run's ``participants[]`` (flows.html §5a/§9 item 12) — the
+    durable participant set, additively carrying its place in the leaf PDF rule's ordered
+    signing plan. One account may hold TWO of these (two owner parties, or one customer bound
+    to two party keys) — never collapse this to a single row by user id.
+    """
+
+    party_key: Optional[str]
+    person_user_id: Optional[str] = None
+    connection_id: Optional[str] = None
+    document_id: Optional[str] = None
+    document_status: Optional[str] = None
+    requires_signature: bool = False
+    requires_acceptance: bool = False
+    # 1-based place in the signing plan; None for a party the plan does not name.
+    position: Optional[int] = None
+    # 'signed' | 'accepted' | None — None until this participant's document has acted.
+    action: Optional[str] = None
+    acted_at: Optional[str] = None
+
+    @classmethod
+    def from_api(cls, obj: dict) -> "FlowRunParticipant":
+        return cls(
+            party_key=obj.get("party_key"),
+            person_user_id=obj.get("person_user_id"),
+            connection_id=obj.get("connection_id"),
+            document_id=obj.get("document_id"),
+            document_status=obj.get("document_status"),
+            requires_signature=bool(_coerce_bool(obj.get("requires_signature"))),
+            requires_acceptance=bool(_coerce_bool(obj.get("requires_acceptance"))),
+            position=obj.get("position"),
+            action=obj.get("action"),
+            acted_at=obj.get("acted_at"),
         )
 
 

@@ -814,6 +814,14 @@ A `Document` carries `id, kind, name, description, status, payload_kind,
 is_private, value, metadata, created_at, updated_at` (and `.raw`). Use `.json()`
 on a `payload_kind="json"` document to get the decrypted plaintext object.
 
+A contract-flow-generated document can also read `status="waiting"` — a run-participant
+copy whose signer has not been reached yet in the run's ordered signing plan. It is
+read-only: `update_document_status` raises with `error_key="documents.run_managed"`
+(409) if you try to write `status` on a run-participant document while it is `waiting`,
+`ready_to_sign` or `offering` — that status moves only through flow generation, the
+run's own advance, sign/accept, or a run cancel/decline. Such a document's
+`run_signatures` carries the run's ordered signature summary.
+
 ### Reacting to a status change in the feed
 
 When someone advances one of your documents (e.g. signs it), the platform emits a
