@@ -56,6 +56,9 @@ class Value:
     verified: bool                    # the hash recomputes over the plaintext AND the verification has not lapsed
     verified_at: Optional[datetime]        # when the answering field was verified
     verified_expires_at: Optional[datetime]  # when that verification lapses; None = it does not
+    verified_method: Optional[str]           # HOW allme bound it: email_code|sms_code|sumsub_id|sumsub_address
+    verified_provider: Optional[str]         # WHO established the proof: allme|sumsub
+    verification_id: Optional[str]           # the proof id to quote back to allme in a dispute
     raw: dict
 ```
 
@@ -122,6 +125,9 @@ class Change:
     verified: bool = False       # field_updated only; hash recomputes AND the verification has not lapsed
     verified_at: Optional[datetime] = None         # when the answering field was verified
     verified_expires_at: Optional[datetime] = None  # when that verification lapses; None = it does not
+    verified_method: Optional[str] = None     # HOW allme bound it (field_updated only)
+    verified_provider: Optional[str] = None   # WHO established the proof (field_updated only)
+    verification_id: Optional[str] = None     # the proof id to quote back (field_updated only)
     at: Optional[datetime] = None  # the change time (no separate updated_at on a change)
     raw: dict
 ```

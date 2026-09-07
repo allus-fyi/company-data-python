@@ -112,6 +112,14 @@ class Attestation:
     verified_at: str
     #: When the verification lapses; None when it does not.
     verified_expires_at: Optional[str] = None
+    #: HOW allme bound the value: ``email_code`` | ``sms_code`` | ``sumsub_id`` |
+    #: ``sumsub_address``. Read from the OPENED seal. None when the value was bound before
+    #: the proof log existed — the three proof members arrive together or not at all.
+    verified_method: Optional[str] = None
+    #: WHO established the proof: ``allme`` | ``sumsub``. Same all-or-none set.
+    verified_provider: Optional[str] = None
+    #: The id to quote back to allme in a dispute. Same all-or-none set.
+    verification_id: Optional[str] = None
 
 
 class OAuthClient:
@@ -364,6 +372,11 @@ class OAuthClient:
                 salt=salt,
                 verified_at=str(parsed.get("verified_at") or ""),
                 verified_expires_at=str(expires_at) if expires_at else None,
+                # Additive INSIDE the seal, and parse-permissive: a seal built before the
+                # proof log existed carries none of the three and every one reads None.
+                verified_method=parsed.get("verified_method"),
+                verified_provider=parsed.get("verified_provider"),
+                verification_id=parsed.get("verification_id"),
             )
         return out
 

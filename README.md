@@ -381,7 +381,8 @@ You work with these objects and nothing else (`from allus_company_data import �
 ```text
 RequestField { slug, label, type, one_time, mandatory, verified, verified_max_age_days }
 Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
-Value        { value, live, updated_at, verified, verified_at, verified_expires_at }
+Value        { value, live, updated_at, verified, verified_at, verified_expires_at,
+               verified_method, verified_provider, verification_id }
 Change       { id, event, person_id, slug?, value?, live?, document_id?, status?, at }
 Document     { id, kind, name, description, status, payload_kind, is_private, value, metadata, created_at, updated_at }
 LogEntry     { type, message, metadata, at }
@@ -404,6 +405,13 @@ source slug, no `field_id`, not even via `.raw`.
 | `verified` | `True` only when the verification hash recomputes over the decrypted plaintext **and** the verification has not lapsed. Absent metadata reads `False`, which means "not attested", not "wrong". |
 | `verified_at` | `datetime` the answering field was verified, or `None`. A stamp, not a promise about today. |
 | `verified_expires_at` | `datetime` that verification lapses, or `None` when it does not. A document-backed verification dies with the document; once this is past, `verified` reads `False`. |
+| `verified_method` | HOW allme bound the value: `email_code` \| `sms_code` \| `sumsub_id` \| `sumsub_address`. |
+| `verified_provider` | WHO established the proof: `allme` \| `sumsub`. |
+| `verification_id` | The proof id to quote back to allme in a dispute — it resolves the full record, including facts you never receive. |
+
+The last three are the **proof metadata** and arrive **together or not at all**: a value bound before
+the proof log existed carries the four verification keys and none of these, so all three read `None`.
+They are readable whatever `verified` says — that boolean stays the only trust decision.
 
 ### Value types (from the field's `type`)
 
@@ -491,6 +499,7 @@ A change-feed / webhook event.
 | `document_id`, `status` | Present only on `document_status_changed` — which document moved lifecycle state and to what (no slug/value). See [Company documents](#company-documents). |
 | `connection_id`, `message_id`, `person_public_key`, `message_body` | Present only on `message_received` — a person messaged your service. `message_body` is the **decrypted** text. See [Messaging](#messaging). |
 | `verified`, `verified_at`, `verified_expires_at` | Present on `field_updated`, with the same meaning as on `Value`. |
+| `verified_method`, `verified_provider`, `verification_id` | The proof metadata, same meaning and same all-or-none rule as on `Value`. |
 | `at` | `datetime` of the change. (There is no separate `updated_at` on a change.) |
 
 ### `.raw`
@@ -1094,7 +1103,11 @@ explicit null — and a value below 1 raises `ConfigError` at the call.
   **an entry present with `verified` false is a MISMATCH and you must reject the value.** `verified_at`
   attests the value as verified *at that moment*, not verified today; `verified_expires_at` is when that
   verification lapses on its own (`None` = it does not), and an **expired attestation is unverified** —
-  the computed `verified` already reads false once it has passed.
+  the computed `verified` already reads false once it has passed. `verified_method`,
+  `verified_provider` and `verification_id` are the proof metadata read from the opened seal — HOW the
+  value was bound, by WHOM, and the id to quote back to allme in a dispute. All three arrive together
+  or not at all; a seal built before the proof log existed carries none of them and every one reads
+  `None`.
 
 **`resolve_userinfo(access_token, fallback_mode=None)`** is the second half of `complete_sign_in` — the
 `userinfo` read + decrypt + attest, without the token exchange — for a caller whose exchange already ran

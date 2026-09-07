@@ -7,7 +7,8 @@ injected crypto core.
 
     RequestField { slug, label, type, one_time, mandatory, verified, verified_max_age_days }
     Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
-    Value        { value, live, updated_at, verified, verified_at, verified_expires_at }
+    Value        { value, live, updated_at, verified, verified_at, verified_expires_at,
+                   verified_method, verified_provider, verification_id }
     Change       { id, event, person_id, share_code?, slug?, value?, live?, at }   # id = stable dedup key
     LogEntry     { type, message, metadata, at }
 
@@ -212,6 +213,13 @@ class Value:
     # When that verification lapses (a document-backed verification dies with the
     # document). None = it does not lapse. Past → ``verified`` reads False.
     verified_expires_at: Optional[datetime] = None
+    # HOW allme bound this value, WHO established the proof, and the id to quote back to
+    # allme in a dispute. The three arrive together or not at all: a value bound before the
+    # proof log existed carries the four verification keys and none of these. They are
+    # readable whatever ``verified`` says — that boolean stays the only trust decision.
+    verified_method: Optional[str] = None
+    verified_provider: Optional[str] = None
+    verification_id: Optional[str] = None
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -241,6 +249,9 @@ class Value:
             verified=_verified_from(obj, typed),
             verified_at=_parse_iso_dt(obj.get("verified_at")),
             verified_expires_at=_parse_iso_dt(obj.get("verified_expires_at")),
+            verified_method=obj.get("verified_method"),
+            verified_provider=obj.get("verified_provider"),
+            verification_id=obj.get("verification_id"),
             raw=obj,
         )
 
@@ -417,6 +428,11 @@ class Change:
     verified: bool = False  # True iff a field_updated value's hash matches AND the verification has not lapsed
     verified_at: Optional[datetime] = None         # when the answering field was verified (None when unverified)
     verified_expires_at: Optional[datetime] = None  # when that verification lapses (None = it does not)
+    # The proof metadata beside the binding — how it was bound, by whom, and the id to quote
+    # back in a dispute. All three or none; readable whatever ``verified`` says.
+    verified_method: Optional[str] = None
+    verified_provider: Optional[str] = None
+    verification_id: Optional[str] = None
     at: Optional[datetime] = None
     raw: dict = field(default_factory=dict, repr=False)
 
@@ -488,6 +504,9 @@ class Change:
             verified=_verified_from(obj, value),
             verified_at=_parse_iso_dt(obj.get("verified_at")),
             verified_expires_at=_parse_iso_dt(obj.get("verified_expires_at")),
+            verified_method=obj.get("verified_method"),
+            verified_provider=obj.get("verified_provider"),
+            verification_id=obj.get("verification_id"),
             at=_parse_iso_dt(obj.get("at")),
             raw=obj,
         )
