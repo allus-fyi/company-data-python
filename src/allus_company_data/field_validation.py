@@ -31,6 +31,13 @@ _URL_RE = re.compile(r"^https?://[^\s/$.?#][^\s]*\.[^\s]{2,}$", re.IGNORECASE)
 _MIME_RE = re.compile(r"^[\w.+-]+/[\w.+-]+$")
 _PHONE_RE = re.compile(r"^\+?\d{4,15}$")
 _CARD_RE = re.compile(r"^\d{12,19}$")
+# Numeric grammars accept ASCII digits only.
+_INTEGER_RE = re.compile(r"^-?[0-9]+$")
+# decimal(10,2) is a FIXED shape: up to 8 integer digits + up to 2 decimal digits (10
+# significant digits total), never a per-field configurable precision.
+_DECIMAL_RE = re.compile(r"^-?[0-9]{1,8}(\.[0-9]{1,2})?$")
+# Float accepts decimal or scientific notation.
+_FLOAT_RE = re.compile(r"^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$")
 _URL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 _PHONE_STRIP_RE = re.compile(r"[ \-().]")
 _CARD_STRIP_RE = re.compile(r"[ -]")
@@ -77,6 +84,7 @@ _RULES: dict[str, dict] = {
     "address": {"kind": "object"}, "creditcard": {"kind": "object"}, "bank": {"kind": "object"},
     "document": {"kind": "object"}, "legal_document": {"kind": "object"},
     "number": {"kind": "number"}, "boolean": {"kind": "boolean"},
+    "integer": {"kind": "integer"}, "decimal": {"kind": "decimal"}, "float": {"kind": "float"},
     "country": {"kind": "countryCode"}, "nationality": {"kind": "countryCode"},
     # text + unknown => no rule => accept anything
 }
@@ -144,6 +152,12 @@ def _apply_kind(kind: str, value: str) -> bool:
         return bool(_CARD_RE.match(s)) and _luhn_ok(s)
     if kind == "number":
         return _finite_number(value)
+    if kind == "integer":
+        return bool(_INTEGER_RE.match(value.strip()))
+    if kind == "decimal":
+        return bool(_DECIMAL_RE.match(value.strip()))
+    if kind == "float":
+        return bool(_FLOAT_RE.match(value.strip()))
     if kind == "boolean":
         return value == "true" or value == "false"
     if kind == "countryCode":

@@ -30,7 +30,7 @@ def test_vector_case(case):
 
 def test_vector_has_all_cases():
     # Guard against an accidental truncation of the committed vector.
-    assert len(_cases()) == 115
+    assert len(_cases()) == 148
 
 
 def test_field_value_error_tag():
