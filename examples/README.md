@@ -107,6 +107,11 @@ but that is a convenience, not a remedy for switching mid-flow: the browser also
 your saved setup per origin, so a flow that returns to the other spelling lands on a
 page whose stored settings are simply not there.
 
+**Behind a TLS proxy.** The redirect URI's scheme follows the request too: `http`
+normally, or `https` when a TLS-terminating proxy sits in front of the example and
+forwards `X-Forwarded-Proto: https`. Register the OAuth app's redirect URI with
+whichever scheme your proxy actually presents to the browser.
+
 **Port.** `8091` is the default, overridable with `PORT`. The default is deliberately
 the **same across all allus SDK examples** (one browser origin ⇒ your localStorage
 setup carries across SDKs) — the documented consequence is that only one example runs

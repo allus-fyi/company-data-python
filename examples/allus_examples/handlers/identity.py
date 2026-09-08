@@ -577,17 +577,17 @@ class IdentityHandlers:
         )
 
     def _redirect_uri(self, headers: Optional[Dict[str, str]]) -> str:
-        """The registered redirect URI: ``http://{host}/callback``, host = the origin the browser
-        actually used. The server binds all interfaces, so a phone on the LAN saves ITS
-        origin into the config file and the OAuth round-trip returns to the phone, not to the
-        phone's own localhost. Never falls back to a hardcoded host — ``127.0.0.1`` and
+        """The registered redirect URI: ``{scheme}://{host}/callback``, host = the origin the browser
+        actually used and scheme = what it reached us on. The server binds all interfaces, so a phone
+        on the LAN saves ITS origin into the config file and the OAuth round-trip returns to the phone,
+        not to the phone's own localhost. Never falls back to a hardcoded host — ``127.0.0.1`` and
         ``localhost`` are DIFFERENT origins for redirect matching and for browser storage alike,
         so a substituted default drops the developer on an origin whose localStorage never held
         the setup and whose URI the OAuth app never registered."""
         host = _request_host(headers)
         if not host:
             raise ValueError(NO_ORIGIN)
-        return f"http://{host}/callback"
+        return f"{_request_scheme(headers)}://{host}/callback"
 
 
 # ── module helpers ────────────────────────────────────────────────────────────
@@ -600,6 +600,18 @@ def _request_host(headers: Optional[Dict[str, str]]) -> str:
         if name.lower() == "host":
             return str(value).strip()
     return ""
+
+
+def _request_scheme(headers: Optional[Dict[str, str]]) -> str:
+    """The scheme THIS request reached us on. There is no TLS termination in-process, so a TLS
+    proxy in front of the example is the only source: the first comma-separated value of
+    ``X-Forwarded-Proto`` (matched case-insensitively), lowercased. Anything but ``https`` there —
+    including an absent header — means ``http``."""
+    for name, value in (headers or {}).items():
+        if name.lower() == "x-forwarded-proto":
+            first = str(value).split(",")[0].strip().lower()
+            return "https" if first == "https" else "http"
+    return "http"
 
 
 def _claims(data: Dict[str, Any]) -> List[str]:
