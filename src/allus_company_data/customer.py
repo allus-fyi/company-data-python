@@ -33,7 +33,7 @@ from .config import Config
 from .crypto import decrypt as crypto_decrypt, encrypt_for_public_key, load_public_key
 from .customer_models import CustomerConnection
 from .errors import ConfigError, ValidationError
-from .field_validation import is_field_value_valid
+from .field_types import FieldTypeRegistry
 from .http import HttpClient
 from .models import Change, Document, FlowRun
 from .pump import Pump
@@ -42,6 +42,7 @@ _CONN = "/api/company-connections"
 _CONSENTS = "/api/company-connections/consents"
 _CUSTOMER_CHANGES = "/api/customer/changes"
 _KEYS = "/api/keys"
+_FIELD_TYPES = "/api/contact-field-types"
 _DEFAULT_PAGE = 100
 
 
@@ -101,6 +102,12 @@ class CustomerClient:
         # _request_type_cache: "company_code/service_code" → {request_field_id: field_type},
         # resolved from the connect-screen lookup for typed-answer validation.
         self._request_type_cache: dict[str, dict[str, str]] = {}
+        # The field-type registry, fetched beside the request-field lookup and held
+        # for the life of the client. A type it does not carry triggers ONE refetch;
+        # a type a refetch still does not resolve is remembered here and never asked
+        # for again.
+        self._field_types: Optional[FieldTypeRegistry] = None
+        self._unresolved_types: set = set()
         self._pump: Optional[Pump] = None
 
     # ── constructors (config-only keys) ─────────────────────────────────────────
@@ -114,6 +121,52 @@ class CustomerClient:
     def from_env(cls, **kwargs: Any) -> "CustomerClient":
         """Build entirely from ``ALLUS_*`` env vars (customer role)."""
         return cls(Config.from_customer_env(), **kwargs)
+
+    # ── definitions ─────────────────────────────────────────────────────────────
+
+    def field_types(self) -> FieldTypeRegistry:
+        """The field-type registry — what every TYPE in a request catalog means.
+
+        Fetched from ``GET /api/contact-field-types`` beside the connect-screen
+        lookup this client resolves a request row's type from, and held in memory
+        for the life of the client. It is what validates a typed answer before it is
+        encrypted.
+        """
+        if self._field_types is None:
+            self._field_types = self._load_field_types()
+        return self._field_types
+
+    def _load_field_types(self) -> FieldTypeRegistry:
+        """One fetch of the registry rows, with no caching of its own.
+
+        A failure is raised, never answered with an empty registry: "unknown accepts
+        anything" is a verdict about the deployment and must not stand in for a fetch
+        that did not happen.
+        """
+        # The registry route answers JSON to every caller — it is not one of the customer
+        # routes that honour the configured ``format`` — so its body is parsed as JSON
+        # whatever this client speaks elsewhere.
+        resp = self._http.get_response(_FIELD_TYPES)
+        body = self._http.parse_body(resp, False)
+        return FieldTypeRegistry(body if isinstance(body, list) else [])
+
+    def _ensure_types_known(self, types) -> None:
+        """One bounded refetch when the held registry does not carry a type in use.
+
+        The refetch replaces the held registry only once it has ARRIVED, so a refetch
+        that fails leaves the rows already loaded standing rather than none at all.
+        """
+        registry = self.field_types()
+        missing = {
+            t
+            for t in types
+            if t and not registry.knows(t) and t not in self._unresolved_types
+        }
+        if not missing:
+            return
+        registry = self._load_field_types()
+        self._field_types = registry
+        self._unresolved_types.update(t for t in missing if not registry.knows(t))
 
     # ── connections ─────────────────────────────────────────────────────────────
 
@@ -315,7 +368,10 @@ class CustomerClient:
             ):
                 self.invalidate_service_key(company_code, service_code)
         return Change.from_api(
-            event, type_for_slug=lambda slug: None, decrypt_value=self._decrypt_account
+            event,
+            type_for_slug=lambda slug: None,
+            field_types=self.field_types,
+            decrypt_value=self._decrypt_account,
         )
 
     def process_changes(self, handler: Callable[[Change], None], **options: Any) -> None:
@@ -339,12 +395,24 @@ class CustomerClient:
 
     def parse_webhook(self, raw_body: bytes, headers: dict) -> Change:
         return _webhooks.parse_webhook(
-            raw_body, headers, self._config, account_key=self._account_key
+            raw_body,
+            headers,
+            self._config,
+            type_for_slug=lambda slug: None,
+            field_types=self.field_types,
+            decrypt_value=self._decrypt_account,
+            account_key=self._account_key,
         )
 
     def handle_webhook(self, raw_body: bytes, headers: dict) -> Change:
         return _webhooks.handle_webhook(
-            raw_body, headers, self._config, account_key=self._account_key
+            raw_body,
+            headers,
+            self._config,
+            type_for_slug=lambda slug: None,
+            field_types=self.field_types,
+            decrypt_value=self._decrypt_account,
+            account_key=self._account_key,
         )
 
     # ── internals ────────────────────────────────────────────────────────────────
@@ -375,6 +443,10 @@ class CustomerClient:
                     out[str(rid)] = str(ftype)
         except Exception:  # noqa: BLE001 — best-effort; a failed lookup skips validation
             out = {}
+        # Cached only once the registry carries the types the lookup named: a cache
+        # published ahead of a failed heal is never retried, and every answer it types is
+        # then validated against a registry that does not know the type.
+        self._ensure_types_known(out.values())
         self._request_type_cache[key] = out
         return out
 
@@ -391,7 +463,7 @@ class CustomerClient:
         for a in answers:
             plain = str(a["value"])
             ftype = types.get(str(a["request_field_id"]))
-            if ftype and not is_field_value_valid(ftype, plain):
+            if ftype and not self.field_types().is_field_value_valid(ftype, plain):
                 raise ValidationError(a.get("request_field_id"), ftype)
             entry = {
                 "request_field_id": a["request_field_id"],

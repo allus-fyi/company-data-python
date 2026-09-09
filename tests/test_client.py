@@ -102,6 +102,18 @@ class FakeResponse:
         return self._json_body
 
 
+def _field_type_rows():
+    """The vector's own registry rows — the same body a deployment serves."""
+    import json as _json
+    import os as _os
+
+    path = _os.path.join(
+        _os.path.dirname(__file__), "..", "testdata", "contract-field-validation-vector.json"
+    )
+    with open(path, "r", encoding="utf-8") as fh:
+        return _json.load(fh)["registry"]
+
+
 class FakeSession:
     """Routes GET by path to a scripted handler; POST always returns the token."""
 
@@ -121,6 +133,11 @@ class FakeSession:
 
     def get(self, url, params=None, headers=None):
         self.gets.append({"url": url, "params": params})
+        # The registry route is served the way a deployment serves it: the client fetches it
+        # beside the request-field catalog, and a fake that did not answer it would be testing
+        # an environment no deployment has.
+        if url.endswith("/api/contact-field-types"):
+            return FakeResponse(200, json_body=_field_type_rows())
         return self._get_router(url, params)
 
     def request(self, method, url, params=None, headers=None, json=None, data=None):
@@ -925,7 +942,7 @@ def test_change_parses_connect_request_outcome_events(config):
     accepted = Change.from_api(
         {"id": "c1", "event": "connection_request_accepted", "request_id": "req-9",
          "person_user_id": "person-1", "share_code": "P1CODE", "at": "2026-06-23T10:00:00Z"},
-        type_for_slug=lambda s: None, decrypt_value=lambda v: v,
+        type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=lambda v: v,
     )
     assert accepted.event == "connection_request_accepted"
     assert accepted.request_id == "req-9"
@@ -936,7 +953,7 @@ def test_change_parses_connect_request_outcome_events(config):
     rejected = Change.from_api(
         {"id": "c2", "event": "connection_request_rejected", "request_id": "req-8",
          "person_user_id": "person-2", "at": "2026-06-23T11:00:00Z"},
-        type_for_slug=lambda s: None, decrypt_value=lambda v: v,
+        type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=lambda v: v,
     )
     assert rejected.event == "connection_request_rejected"
     assert rejected.request_id == "req-8"
@@ -944,6 +961,26 @@ def test_change_parses_connect_request_outcome_events(config):
     # request_id stays None for unrelated events.
     field_evt = Change.from_api(
         {"id": "c3", "event": "connection_created", "person_user_id": "person-3"},
-        type_for_slug=lambda s: None, decrypt_value=lambda v: v,
+        type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=lambda v: v,
     )
     assert field_evt.request_id is None
+
+
+def _test_field_types():
+    """The vector's own registry — the rows every model test types its values against."""
+    global _TEST_FIELD_TYPES
+    if _TEST_FIELD_TYPES is None:
+        import json as _json
+        import os as _os
+
+        from allus_company_data.field_types import FieldTypeRegistry
+
+        path = _os.path.join(
+            _os.path.dirname(__file__), "..", "testdata", "contract-field-validation-vector.json"
+        )
+        with open(path, "r", encoding="utf-8") as fh:
+            _TEST_FIELD_TYPES = FieldTypeRegistry(_json.load(fh)["registry"])
+    return _TEST_FIELD_TYPES
+
+
+_TEST_FIELD_TYPES = None

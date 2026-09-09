@@ -12,16 +12,19 @@ injected crypto core.
     Change       { id, event, person_id, share_code?, slug?, value?, live?, at }   # id = stable dedup key
     LogEntry     { type, message, metadata, at }
 
-Typed values:
+A value's shape follows the RESOLVED DEFINITION of its field type
+(:class:`~allus_company_data.field_types.FieldTypeRegistry`), never a list of type
+names:
 
-* ``email``/``phone``/``url``/``text`` → ``str``
-* ``address``/``bank``/``creditcard``  → ``dict`` (the decrypted plaintext is a
-  JSON object string → parsed)
-* ``date``/``date_of_birth``           → :class:`datetime.date`
-* ``photo``/``document``/``legal_document`` and the ID-document subtypes
-  ``passport``/``photo_id``/``drivers_license`` → a lazy :class:`BinaryHandle`
+* storage lane ``photo``/``document`` → a lazy :class:`BinaryHandle`
   (``.bytes()`` fetches the slot file endpoint, decrypts, parses the envelope,
   base64-decodes the ``full``/``file`` data URI)
+* primitive ``composite`` → ``dict`` (the decrypted plaintext is a JSON object
+  string → parsed)
+* primitive ``date`` → :class:`datetime.date`
+* primitive ``multilist`` → ``list``
+* everything else → the plaintext ``str``, whose grammar the registry's
+  :meth:`~allus_company_data.field_types.FieldTypeRegistry.validate` states
 
 Every model carries ``.raw`` — the underlying (hardened) API dict — for debugging
 or an edge case the SDK didn't model. It still never contains the person's source
@@ -40,27 +43,18 @@ from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from .crypto import BinaryFetchResult, BinaryHandle, DecryptError, hash_matches
-
-# Field types whose decrypted plaintext is a JSON object → a parsed dict.
-STRUCTURED_TYPES = ("address", "bank", "creditcard")
-# Field types whose value is a lazy binary handle (served as a value_url) — the
-# ID-document subtypes are children of ``legal_document`` and share its envelope.
-BINARY_TYPES = (
-    "photo",
-    "document",
-    "legal_document",
-    "passport",
-    "photo_id",
-    "drivers_license",
-)
-# Field types whose decrypted plaintext is an ISO date.
-DATE_TYPES = ("date", "date_of_birth")
+from .field_types import FieldTypeRegistry
 
 # A decrypt callable: takes the ciphertext wrapper (dict or JSON string) and
 # returns the decrypted plaintext string. Closes over the service private key.
 DecryptValue = Callable[[Any], str]
 # A type resolver: slug -> the request field's type (e.g. "email", "photo").
 TypeForSlug = Callable[[str], Optional[str]]
+# The served registry, supplied as a callable rather than an object: resolving a
+# slug is what heals the registry, so a factory handed the registry itself would
+# hold the one from BEFORE the heal and type the very value that triggered it
+# against rows that do not carry its type.
+FieldTypesSource = Callable[[], FieldTypeRegistry]
 # A binary fetch callable: takes the slot-keyed value_url and returns the CLASSIFIED
 # response — the file endpoint has an encrypted and a plaintext 200 shape, and
 # only the caller of the HTTP layer can see the Content-Type that tells them apart.
@@ -229,6 +223,7 @@ class Value:
         obj: dict,
         *,
         field_type: Optional[str],
+        field_types: FieldTypesSource,
         decrypt_value: DecryptValue,
         binary_fetch: Optional[BinaryFetch] = None,
     ) -> "Value":
@@ -239,6 +234,7 @@ class Value:
         typed = _typed_value(
             obj,
             field_type=field_type,
+            field_types=field_types,
             decrypt_value=decrypt_value,
             binary_fetch=binary_fetch,
         )
@@ -260,14 +256,26 @@ def _typed_value(
     obj: dict,
     *,
     field_type: Optional[str],
+    field_types: FieldTypesSource,
     decrypt_value: DecryptValue,
     binary_fetch: Optional[BinaryFetch],
 ) -> Any:
-    """Decrypt + coerce one value entry to its typed Python form."""
+    """Decrypt + coerce one value entry to its typed Python form.
+
+    The shape comes from the type's RESOLVED definition — its storage lane and its
+    primitive — so a type added to the registry types itself from the day it is a
+    row.
+
+    The registry is read HERE, from ``field_types()``, and not before: ``field_type``
+    was resolved by a call that may have healed the registry, and this value — the one
+    that triggered that heal — must be typed by the rows the heal brought in.
+    """
     ftype = (field_type or "").lower()
+    registry = field_types()
+    definition = registry.resolve(ftype)
 
     # Binary → a lazy handle over the slot value_url (no eager fetch/decrypt).
-    if ftype in BINARY_TYPES or "value_url" in obj:
+    if registry.is_binary(ftype) or "value_url" in obj:
         value_url = obj.get("value_url")
         if value_url is None:
             # Binary type but no url (e.g. unanswered) → an empty handle.
@@ -283,8 +291,9 @@ def _typed_value(
     if ciphertext is None:
         return None
     plaintext = decrypt_value(ciphertext)
+    primitive = definition["input"]
 
-    if ftype in STRUCTURED_TYPES:
+    if primitive in ("composite", "multilist"):
         try:
             parsed = json.loads(plaintext)
         except json.JSONDecodeError as exc:
@@ -293,11 +302,12 @@ def _typed_value(
             ) from exc
         return parsed
 
-    if ftype in DATE_TYPES:
+    if primitive == "date":
         parsed_date = _parse_date(plaintext)
         return parsed_date if parsed_date is not None else plaintext
 
-    # text/email/phone/url and anything unknown → the plaintext string.
+    # Every other primitive, and a type the registry does not carry, is the
+    # plaintext string.
     return plaintext
 
 
@@ -337,6 +347,7 @@ class Connection:
         obj: dict,
         *,
         type_for_slug: TypeForSlug,
+        field_types: FieldTypesSource,
         decrypt_value: DecryptValue,
         binary_fetch: Optional[BinaryFetch] = None,
         identity: Optional[dict] = None,
@@ -368,6 +379,7 @@ class Connection:
                 slug,
                 entry,
                 field_type=type_for_slug(slug),
+                field_types=field_types,
                 decrypt_value=decrypt_value,
                 binary_fetch=binary_fetch,
             )
@@ -442,6 +454,7 @@ class Change:
         obj: dict,
         *,
         type_for_slug: TypeForSlug,
+        field_types: FieldTypesSource,
         decrypt_value: DecryptValue,
         binary_fetch: Optional[BinaryFetch] = None,
     ) -> "Change":
@@ -458,6 +471,7 @@ class Change:
                 value = _typed_value(
                     obj,
                     field_type=type_for_slug(slug),
+                    field_types=field_types,
                     decrypt_value=decrypt_value,
                     binary_fetch=binary_fetch,
                 )
@@ -517,6 +531,7 @@ class Change:
         body: Any,
         *,
         type_for_slug: TypeForSlug,
+        field_types: FieldTypesSource,
         decrypt_value: DecryptValue,
         binary_fetch: Optional[BinaryFetch] = None,
     ) -> List["Change"]:
@@ -526,6 +541,7 @@ class Change:
             cls.from_api(
                 o,
                 type_for_slug=type_for_slug,
+                field_types=field_types,
                 decrypt_value=decrypt_value,
                 binary_fetch=binary_fetch,
             )
@@ -774,7 +790,4 @@ __all__ = [
     "Change",
     "FlowRun",
     "LogEntry",
-    "STRUCTURED_TYPES",
-    "BINARY_TYPES",
-    "DATE_TYPES",
 ]

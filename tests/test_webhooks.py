@@ -164,7 +164,7 @@ def test_parse_plain_json_body(config, vector, decrypt_value):
     body = _change_body(vector)
     change = parse_webhook(
         body, _headers(body), config,
-        type_for_slug=_type_for_slug, decrypt_value=decrypt_value,
+        type_for_slug=_type_for_slug, field_types=_test_field_types, decrypt_value=decrypt_value,
     )
     assert change.id == "chg-1"
     assert change.event == "field_updated"
@@ -195,7 +195,7 @@ def test_parse_xml_body(config, vector, decrypt_value):
 
     change = parse_webhook(
         xml, headers, config,
-        type_for_slug=_type_for_slug, decrypt_value=decrypt_value,
+        type_for_slug=_type_for_slug, field_types=_test_field_types, decrypt_value=decrypt_value,
     )
     assert change.id == "chg-7"
     assert change.event == "field_updated"
@@ -259,7 +259,7 @@ def test_parse_account_key_envelope(vector, tmp_path, decrypt_value):
     assert verify_webhook(body, headers, config) is True
     change = parse_webhook(
         body, headers, config,
-        type_for_slug=_type_for_slug, decrypt_value=decrypt_value,
+        type_for_slug=_type_for_slug, field_types=_test_field_types, decrypt_value=decrypt_value,
     )
     assert change.id == "chg-1"
     assert change.event == "field_updated"
@@ -277,7 +277,7 @@ def test_parse_account_envelope_without_account_key_raises(config, vector, decry
     with pytest.raises(WebhookError):
         parse_webhook(
             body, _headers(body), config,  # config has no account_private_key
-            type_for_slug=_type_for_slug, decrypt_value=decrypt_value,
+            type_for_slug=_type_for_slug, field_types=_test_field_types, decrypt_value=decrypt_value,
         )
 
 
@@ -288,7 +288,7 @@ def test_handle_verify_then_parse(config, vector, decrypt_value):
     body = _change_body(vector)
     change = handle_webhook(
         body, _headers(body), config,
-        type_for_slug=_type_for_slug, decrypt_value=decrypt_value,
+        type_for_slug=_type_for_slug, field_types=_test_field_types, decrypt_value=decrypt_value,
     )
     assert change.id == "chg-1"
 
@@ -300,7 +300,7 @@ def test_handle_bad_signature_raises(config, vector, decrypt_value):
     with pytest.raises(WebhookError):
         handle_webhook(
             body, headers, config,
-            type_for_slug=_type_for_slug, decrypt_value=decrypt_value,
+            type_for_slug=_type_for_slug, field_types=_test_field_types, decrypt_value=decrypt_value,
         )
 
 
@@ -324,6 +324,8 @@ def test_client_methods_delegate(config, vector):
             return _TokenResp()
 
         def get(self, url, params=None, headers=None):
+            if url.endswith("/api/contact-field-types"):
+                return _FieldTypesResp()
             assert url.endswith("/request-fields"), f"unexpected GET {url}"
             catalog_calls["n"] += 1
             return _RFResp()
@@ -389,6 +391,8 @@ def test_account_key_loaded_once_and_reused(vector, tmp_path, monkeypatch):
             return _TokenResp()
 
         def get(self, url, params=None, headers=None):
+            if url.endswith("/api/contact-field-types"):
+                return _FieldTypesResp()
             assert url.endswith("/request-fields")
             return _RFResp()
 
@@ -430,7 +434,7 @@ def test_parse_webhook_loads_account_key_when_not_supplied(config, vector, decry
     body = _wrap_to_account_key(account_pub, _change_body(vector))
     change = parse_webhook(  # no account_key kwarg → loaded from config on demand
         body, _headers(body), cfg,
-        type_for_slug=_type_for_slug, decrypt_value=decrypt_value,
+        type_for_slug=_type_for_slug, field_types=_test_field_types, decrypt_value=decrypt_value,
     )
     assert change.id == "chg-1"
     assert change.value == vector["text"]["plaintext"]
@@ -443,6 +447,30 @@ class _TokenResp:
 
     def json(self):
         return {"access_token": "t", "token_type": "Bearer", "expires_in": 3600}
+
+
+class _FieldTypesResp:
+    """The registry route, answered the way a deployment answers it."""
+
+    status_code = 200
+    headers: dict = {}
+
+    def __init__(self):
+        self._b = _test_field_types_rows()
+        self.text = json.dumps(self._b)
+
+    def json(self):
+        return self._b
+
+
+def _test_field_types_rows():
+    import os as _os
+
+    path = _os.path.join(
+        _os.path.dirname(__file__), "..", "testdata", "contract-field-validation-vector.json"
+    )
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)["registry"]
 
 
 class _RFResp:
@@ -567,3 +595,23 @@ def test_config_single_method_ok_and_method_name(vector, tmp_path):
     assert cfg2.webhook_auth_method() == "hmac"
     cfg3 = Config._build(_full_data(vector, tmp_path, webhook_auth_none=True))
     assert cfg3.webhook_auth_method() == "none"
+
+
+def _test_field_types():
+    """The vector's own registry — the rows every model test types its values against."""
+    global _TEST_FIELD_TYPES
+    if _TEST_FIELD_TYPES is None:
+        import json as _json
+        import os as _os
+
+        from allus_company_data.field_types import FieldTypeRegistry
+
+        path = _os.path.join(
+            _os.path.dirname(__file__), "..", "testdata", "contract-field-validation-vector.json"
+        )
+        with open(path, "r", encoding="utf-8") as fh:
+            _TEST_FIELD_TYPES = FieldTypeRegistry(_json.load(fh)["registry"])
+    return _TEST_FIELD_TYPES
+
+
+_TEST_FIELD_TYPES = None

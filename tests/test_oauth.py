@@ -105,11 +105,11 @@ def test_authorize_url_pkce_and_detached():
 def test_authorize_url_claims_validation():
     c = OAuthClient(_cfg())
     # Every claim carries a mandatory `name` — the identity everything downstream is keyed by.
+    # The TYPE is passed through as written: which types are claimable is registry data the
+    # server owns, and a type it does not accept comes back as invalid_request.
     claims = [
         Claim("email", "email", suggest="email_personal"),
-        Claim("avatar", "photo"),        # binary → dropped
         Claim("phone", "phone", required=True),
-        Claim("nothing", ""),            # empty type → dropped
     ]
     _, q = _parse_url(c.authorize_url("one_time", claims=claims))
     parsed = json.loads(q["claims"])

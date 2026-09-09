@@ -32,12 +32,8 @@ from .errors import (
     ValidationError,
     WebhookError,
 )
-from .field_validation import (
-    dial_code_for,
-    field_value_error,
-    is_field_value_valid,
-    is_valid_country_code,
-)
+from .field_types import FieldTypeRegistry
+from .field_validation import dial_code_for, is_valid_country_code
 from .http import HttpClient
 from .flow_condition import (
     compute_constants,
@@ -82,9 +78,8 @@ __all__ = [
     "WebhookError",
     "RateLimitError",
     "ValidationError",
-    # field-type value validation + country helpers
-    "is_field_value_valid",
-    "field_value_error",
+    # the field-type registry (value shape + value validation) + country helpers
+    "FieldTypeRegistry",
     "is_valid_country_code",
     "dial_code_for",
     # transport

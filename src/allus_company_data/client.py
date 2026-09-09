@@ -28,8 +28,13 @@ How it is wired (the "everything else the SDK hides"):
   ``decrypt_value`` closure over it is handed to every model factory and the
   pump (config-only key handling — the key never appears in a method signature).
 * **Slug catalog** — ``request_fields()`` is fetched once and cached; its
-  slug→type map types every value (so ``address`` parses to a dict, ``photo``
-  becomes a lazy binary handle, etc.).
+  slug→type map names the TYPE of every value.
+* **Field-type registry** — ``field_types()`` is fetched beside the catalog and
+  held for the life of the client; it is what a type MEANS, so a value's shape
+  follows the type's resolved primitive and storage lane (a ``composite`` parses
+  to a dict, a ``photo``/``document`` lane becomes a lazy binary handle) rather
+  than a list of type names. A type the held registry does not carry triggers one
+  bounded refetch.
 * **Binary** — a value's ``BinaryHandle.bytes()`` GETs the slot file endpoint and
   returns the file bytes whichever of the endpoint's two 200 shapes arrives:
   an ``{"encrypted":true,"value":<wrapper>}`` envelope runs the same service-key
@@ -64,7 +69,7 @@ from .crypto import (
     load_public_key,
 )
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError, ValidationError
-from .field_validation import is_field_value_valid
+from .field_types import FieldTypeRegistry
 from .flow_condition import evaluate as evaluate_condition
 from .http import HttpClient
 from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField
@@ -76,6 +81,7 @@ _BASE = "/api/company-data"
 _CONNECTIONS = f"{_BASE}/connections"
 _CHANGES = f"{_BASE}/changes"
 _REQUEST_FIELDS = f"{_BASE}/request-fields"
+_FIELD_TYPES = "/api/contact-field-types"
 _LOGS = f"{_BASE}/logs"
 _DOCUMENTS = f"{_BASE}/documents"
 _CONNECT_REQUESTS = f"{_BASE}/connect-requests"
@@ -127,9 +133,22 @@ class Client:
         # key. Config-only key handling: still never a public-method argument.
         self._account_key = _webhooks.load_account_key(config)
 
-        # The slug catalog, fetched once on first request_fields() and cached.
+        # The slug catalog, fetched once on first request_fields() and cached. A slug it
+        # does not carry — a request slot added after this client started — triggers ONE
+        # refetch; a slug a refetch still does not carry is remembered here and never
+        # asked for again, so a slot this deployment does not have cannot turn every
+        # later value into a round trip.
         self._request_fields: Optional[List[RequestField]] = None
         self._type_by_slug: dict[str, Optional[str]] = {}
+        self._unresolved_slugs: set = set()
+
+        # The field-type registry, fetched beside the catalog and held for the life
+        # of the client. A type it does not carry triggers ONE refetch; a type a
+        # refetch still does not resolve is remembered here and never asked for
+        # again, so a value of a type this deployment does not have cannot turn every
+        # later value into a round trip.
+        self._field_types: Optional[FieldTypeRegistry] = None
+        self._unresolved_types: set = set()
 
         # 2FA-by-allme — the relying-party challenge API, lazily built.
         self._two_factor: Optional["TwoFactorClient"] = None
@@ -220,10 +239,65 @@ class Client:
         )
 
     def _type_for_slug(self, slug: str) -> Optional[str]:
-        """Resolve a request slug to its field type (loads the catalog once)."""
+        """Resolve a request slug to its field type (loads the catalog once).
+
+        The payload is the trigger, in two legs. The SLUG a value or a change names is
+        what the held catalog may not carry, and no walk of that catalog can discover
+        it; the slug itself asks for one catalog refetch. Only then can the type be
+        read, and a type the held registry does not carry asks for one registry
+        refetch. Both legs are bounded and both remember their misses.
+        """
         if self._request_fields is None:
             self.request_fields()
-        return self._type_by_slug.get(slug)
+        if slug not in self._type_by_slug:
+            self._ensure_slugs_known([slug])
+        ftype = self._type_by_slug.get(slug)
+        if ftype:
+            self._ensure_types_known([ftype])
+        return ftype
+
+    def _ensure_slugs_known(self, slugs) -> None:
+        """One bounded refetch when the held catalog does not carry a slug in use.
+
+        A request slot configured after this client started is what makes a slug
+        unknown here, and one refetch of the catalog is what resolves it — together
+        with the type that slot introduced, which the refetched catalog carries
+        through the registry heal. A slug still absent afterwards belongs to no slot
+        this client can see, so it is remembered and never asked for again.
+        """
+        missing = {
+            s
+            for s in slugs
+            if s and s not in self._type_by_slug and s not in self._unresolved_slugs
+        }
+        if not missing:
+            return
+        self._load_request_fields()
+        self._unresolved_slugs.update(s for s in missing if s not in self._type_by_slug)
+
+    def _ensure_types_known(self, types) -> None:
+        """One bounded refetch when the held registry does not carry a type in use.
+
+        A row added to the registry after this client started is what makes a type
+        unknown here, and one refetch is what resolves it. A type still absent
+        afterwards is this deployment's answer, not a stale cache, so it is
+        remembered and never asked for again.
+        """
+        registry = self.field_types()
+        missing = {
+            t
+            for t in types
+            if t and not registry.knows(t) and t not in self._unresolved_types
+        }
+        if not missing:
+            return
+        # The refetch replaces the held registry only once it has ARRIVED. Clearing
+        # first would let a failed refetch leave no registry at all, and every type
+        # would then read as unknown — a verdict about the deployment standing in for
+        # a fetch that did not happen.
+        registry = self._load_field_types()
+        self._field_types = registry
+        self._unresolved_types.update(t for t in missing if not registry.knows(t))
 
     # ── definitions ────────────────────────────────────────────────────────────
 
@@ -235,11 +309,49 @@ class Client:
         every value). Returns YOUR request config — never the person's fields.
         """
         if self._request_fields is None:
-            body = self._http.get(_REQUEST_FIELDS)
-            fields = RequestField.list_from_api(body)
-            self._request_fields = fields
-            self._type_by_slug = {f.slug: f.type for f in fields if f.slug is not None}
-        return self._request_fields
+            self._load_request_fields()
+        return self._request_fields  # type: ignore[return-value]
+
+    def _load_request_fields(self) -> None:
+        """One fetch of the catalog, replacing the held one only once it has ARRIVED."""
+        body = self._http.get(_REQUEST_FIELDS)
+        fields = RequestField.list_from_api(body)
+        by_slug = {f.slug: f.type for f in fields if f.slug is not None}
+        # The catalog is published only once the registry that types it has loaded.
+        # Publishing first would let a registry failure leave a cached catalog behind
+        # that no later call retries, and every value it types would then be read
+        # through a registry that knows nothing.
+        self._ensure_types_known(by_slug.values())
+        self._type_by_slug = by_slug
+        self._request_fields = fields
+
+    def field_types(self) -> FieldTypeRegistry:
+        """The field-type registry — what every TYPE in the catalog means.
+
+        Fetched from ``GET /api/contact-field-types`` beside the request-field
+        catalog and held in memory for the life of the client. It says which
+        primitive draws a type, which named check verifies it, which regexes it
+        adds, which sub-fields it carries and on which storage lane its value lives
+        — so a value's shape and a value's validity both follow the served rows
+        rather than a list of type names.
+        """
+        if self._field_types is None:
+            self._field_types = self._load_field_types()
+        return self._field_types
+
+    def _load_field_types(self) -> FieldTypeRegistry:
+        """One fetch of the registry rows, with no caching of its own.
+
+        A failure is raised, never answered with an empty registry: "unknown accepts
+        anything" is a verdict about the deployment and must not stand in for a fetch
+        that did not happen.
+        """
+        # The registry route answers JSON to every caller — it is not one of the
+        # company-data routes that honour the configured ``format`` — so its body is
+        # parsed as JSON whatever this client speaks elsewhere.
+        resp = self._http.get_response(_FIELD_TYPES)
+        body = self._http.parse_body(resp, False)
+        return FieldTypeRegistry(_list_items(body))
 
     @property
     def two_factor(self) -> "TwoFactorClient":
@@ -285,6 +397,7 @@ class Client:
                 yield Connection.from_api(
                     obj,
                     type_for_slug=self._type_for_slug,
+                    field_types=self.field_types,
                     decrypt_value=self._decrypt_value,
                     binary_fetch=self._binary_fetch,
                     # The list row carries identity (display_name/connected_at) AND
@@ -334,6 +447,7 @@ class Client:
         return Connection.from_api(
             body,
             type_for_slug=self._type_for_slug,
+            field_types=self.field_types,
             decrypt_value=self._decrypt_value,
             binary_fetch=self._binary_fetch,
         )
@@ -408,6 +522,7 @@ class Client:
         return Change.from_api(
             event,
             type_for_slug=self._type_for_slug,
+            field_types=self.field_types,
             decrypt_value=self._decrypt_value,
             binary_fetch=self._binary_fetch,
         )
@@ -453,6 +568,7 @@ class Client:
             headers,
             self._config,
             type_for_slug=self._type_for_slug,
+            field_types=self.field_types,
             decrypt_value=self._decrypt_value,
             binary_fetch=self._binary_fetch,
             account_key=self._account_key,  # cached once; no per-webhook PBKDF2
@@ -465,6 +581,7 @@ class Client:
             headers,
             self._config,
             type_for_slug=self._type_for_slug,
+            field_types=self.field_types,
             decrypt_value=self._decrypt_value,
             binary_fetch=self._binary_fetch,
             account_key=self._account_key,  # cached once; no per-webhook PBKDF2
@@ -964,9 +1081,25 @@ class Client:
             # Validate the plaintext against the field's declared type (resolved
             # from the pinned flow definition) before it is encrypted. A slug with no
             # field element in the graph resolves to None → skipped (do not invent a type).
-            ftype = _flow_field_type(run.definition, slug)
-            if ftype is not None and not is_field_value_valid(ftype, plain):
-                raise ValidationError(slug, ftype)
+            element = _flow_field_element(run.definition, slug)
+            ftype = (
+                str(element["field_type"])
+                if element is not None and element.get("field_type") is not None
+                else None
+            )
+            if element is not None and ftype is not None:
+                # The type is named by the pinned definition — a payload, not the request
+                # catalog — so it can be one the held registry has never seen. One bounded
+                # refetch resolves it; a type still absent afterwards validates as unknown,
+                # which accepts anything.
+                self._ensure_types_known([ftype])
+                # A choice type whose ROW carries no options takes them from the ELEMENT,
+                # which is the only place they exist for select/multiselect. Passing them is
+                # what lets the answer be validated at all instead of being measured against
+                # an empty domain.
+                options = _flow_field_options(element)
+                if not self.field_types().is_field_value_valid(ftype, plain, options):
+                    raise ValidationError(slug, ftype)
             values = []
             for uid in run.bindings.values():
                 if uid == run.service_user_id:
@@ -1076,8 +1209,8 @@ def _party_of(definition: dict, node_key: Optional[str]) -> Optional[str]:
     return node.get("party") if node else None
 
 
-def _flow_field_type(definition: dict, slug: str) -> Optional[str]:
-    """Resolve a fill slug to its ``field_type`` from the pinned flow graph.
+def _flow_field_element(definition: dict, slug: str) -> Optional[dict]:
+    """Resolve a fill slug to its field ELEMENT in the pinned flow graph.
 
     Scans every node's ``elements`` for a ``kind='field'`` element with a matching
     ``slug``. Returns ``None`` when the slug has no field element (skip validation —
@@ -1088,9 +1221,26 @@ def _flow_field_type(definition: dict, slug: str) -> Optional[str]:
             continue
         for el in n.get("elements", []) or []:
             if isinstance(el, dict) and el.get("kind") == "field" and el.get("slug") == slug:
-                ft = el.get("field_type")
-                return str(ft) if ft is not None else None
+                return el
     return None
+
+
+def _flow_field_options(element: dict) -> Optional[List[str]]:
+    """The option VALUES a flow field element supplies.
+
+    An element's options are ``{value, label, available_if?}`` objects; the value is
+    the domain member. ``None`` when the element carries none, which leaves the row's
+    own options — if it has any — to govern.
+    """
+    raw = element.get("options")
+    if not isinstance(raw, list):
+        return None
+    values = [
+        str(o["value"])
+        for o in raw
+        if isinstance(o, dict) and o.get("value") is not None
+    ]
+    return values or None
 
 
 def _load_service_key(config: Config):

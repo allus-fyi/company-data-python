@@ -14,7 +14,7 @@ Returned by `client.request_fields()`.
 class RequestField:
     slug: str          # the stable, company-set key — the contract for value access
     label: str         # the human label (rename freely; the slug stays)
-    type: str          # email|phone|url|text|address|bank|creditcard|date|date_of_birth|photo|document|legal_document|passport|photo_id|drivers_license
+    type: str          # the field type — a row in the served registry, never a fixed list
     one_time: bool     # a one-time snapshot vs a live (auto-updating) answer
     mandatory: bool    # mandatory-to-provide OR mandatory-to-stay-connected (the API's two flags, folded)
     verified: bool     # this row DEMANDS a verified answer (mutually exclusive with one_time)
@@ -62,15 +62,30 @@ class Value:
     raw: dict
 ```
 
-### `value` types (resolved from the field's `type`)
+### `value` types — from the type's RESOLVED definition
 
-| Field type | Python `value` | Notes |
-|------------|----------------|-------|
-| `email`, `phone`, `url`, `text` | `str` | The decrypted plaintext. |
-| `address`, `bank`, `creditcard` | `dict` | The decrypted plaintext is a JSON object → parsed. A non-JSON structured value raises `DecryptError`. |
-| `date`, `date_of_birth` | `datetime.date` | Parsed from ISO `YYYY-MM-DD` (the leading 10 chars); falls back to the raw string if unparseable. |
-| `photo`, `document`, `legal_document`, `passport`, `photo_id`, `drivers_license` | `BinaryHandle` | Lazy — nothing fetched/decrypted until `.bytes()`/`.save()`. The last three are ID-document subtypes of `legal_document` and share its envelope. |
+A contact-field TYPE is a ROW in the served field-type registry (`GET /api/contact-field-types`),
+which the client fetches beside the request-field catalog and holds for its life. A value's shape
+follows the type's resolved storage LANE and PRIMITIVE, so a type added as a row types itself with
+no SDK release.
+
+| The type's resolved… | Python `value` | Notes |
+|----------------------|----------------|-------|
+| storage lane `photo` / `document` | `BinaryHandle` | Lazy — nothing fetched/decrypted until `.bytes()`/`.save()`. |
+| primitive `composite` | `dict` | The decrypted plaintext is a JSON object → parsed. A non-JSON value raises `DecryptError`. |
+| primitive `date` | `datetime.date` | Parsed from ISO `YYYY-MM-DD` (the leading 10 chars); falls back to the raw string if unparseable. |
+| primitive `multilist` | `list` | The chosen option strings, parsed from the JSON array. |
+| anything else, and a type the registry does not carry | `str` | The decrypted plaintext. |
 | unanswered / no value | `None` | The slot has no answer. |
+For the seeded types that is, unchanged: `email`/`phone`/`url`/`text` and the three numeric types →
+a string; `country`/`nationality` → an ISO 3166-1 alpha-2 code string; `address`/`bank`/`creditcard`
+→ the parsed object; `date`/`date_of_birth` → the date type; `photo`, `document`,
+`legal_document`, `passport`, `photo_id` and `drivers_license` → the lazy binary handle. A request
+row of a PARENT type MAY be answered by a field of any DESCENDANT, but that matching happens in
+the API: the answer still arrives keyed by YOUR slug and shaped by the SLOT's own type, because
+the person's source field — and therefore its type — is never exposed. A binary slot's
+slot → source → file resolution is likewise the API's.
+
 
 ## `BinaryHandle`
 

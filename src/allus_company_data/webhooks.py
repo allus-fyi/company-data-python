@@ -39,7 +39,7 @@ from .config import Config
 from .crypto import GCM_IV_LEN, GCM_TAG_LEN, load_private_key
 from .errors import WebhookError
 from .http import _parse_xml  # reuse the platform XML inverse
-from .models import BinaryFetch, Change
+from .models import BinaryFetch, Change, FieldTypesSource
 
 # Header names (case-insensitive lookup below).
 _HDR_WEBHOOK_ID = "x-allus-webhook-id"
@@ -144,6 +144,7 @@ def parse_webhook(
     config: Config,
     *,
     type_for_slug: Callable[[str], Optional[str]],
+    field_types: FieldTypesSource,
     decrypt_value: Callable[[Any], str],
     binary_fetch: Optional[BinaryFetch] = None,
     account_key: Optional[rsa.RSAPrivateKey] = None,
@@ -173,6 +174,7 @@ def parse_webhook(
     return Change.from_api(
         payload,
         type_for_slug=type_for_slug,
+        field_types=field_types,
         decrypt_value=decrypt_value,
         binary_fetch=binary_fetch,
     )
@@ -184,6 +186,7 @@ def handle_webhook(
     config: Config,
     *,
     type_for_slug: Callable[[str], Optional[str]],
+    field_types: FieldTypesSource,
     decrypt_value: Callable[[Any], str],
     binary_fetch: Optional[BinaryFetch] = None,
     account_key: Optional[rsa.RSAPrivateKey] = None,
@@ -202,6 +205,7 @@ def handle_webhook(
         headers,
         config,
         type_for_slug=type_for_slug,
+        field_types=field_types,
         decrypt_value=decrypt_value,
         binary_fetch=binary_fetch,
         account_key=account_key,

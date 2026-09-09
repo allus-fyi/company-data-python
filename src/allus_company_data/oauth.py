@@ -33,11 +33,6 @@ from .models import expiry_passed
 # link); the web app is the no-app fallback. Overridable for non-prod hosts.
 DEFAULT_AUTHORIZE_URL = "https://web.allme.fyi/auth"
 
-# Binary field types can't be requested as claims (they can't be encrypted inline) —
-# the ID-document subtypes are binary too, so no ID document ever reaches this surface.
-_NON_CLAIMABLE = frozenset(
-    {"photo", "document", "legal_document", "passport", "photo_id", "drivers_license"}
-)
 _MAX_CLAIMS = 15
 _MODES = frozenset({"signin", "one_time", "connect", "2fa_enroll"})
 _RESPONSE_MODES = frozenset({"redirect", "detached"})
@@ -169,9 +164,13 @@ class OAuthClient:
     ) -> str:
         """Build the consent-screen URL — the "Sign in with allme" button target.
 
-        ``mode`` is one of ``signin`` | ``one_time`` | ``connect`` | ``2fa_enroll``. ``claims`` (one_time)
-        are validated: binary/unknown types are dropped and at most 15 are sent. Pass a
-        PKCE ``code_challenge`` for a public RP; ``state`` is echoed back for CSRF.
+        ``mode`` is one of ``signin`` | ``one_time`` | ``connect`` | ``2fa_enroll``. ``claims``
+        are validated for what this client can answer for itself — a name, no duplicate
+        name, at most 15 — and are otherwise sent as written. WHICH TYPES ARE CLAIMABLE
+        IS THE SERVER'S ANSWER: this URL is built before any token exists and an
+        identity app reads no registry, so a claim of a type the server does not accept
+        comes back as ``invalid_request`` rather than being dropped here. Pass a PKCE
+        ``code_challenge`` for a public RP; ``state`` is echoed back for CSRF.
         """
         if mode not in _MODES:
             raise ConfigError(f"invalid mode {mode!r} (expected one of {sorted(_MODES)})")
@@ -200,17 +199,17 @@ class OAuthClient:
         out: List[dict] = []
         seen: set = set()
         for c in claims:
-            if not c.type or c.type in _NON_CLAIMABLE:
-                continue
             # `name` is the claim's identity and it is mandatory. Refused HERE rather
             # than left to the API, so the integration error surfaces at the call that made it.
+            # The TYPE is not filtered: what a claim may be typed as is registry data the
+            # server owns, and this client holds none of it.
             name = (c.name or "").strip()
             if not name:
                 raise ConfigError("every claim must carry a `name`")
             if name in seen:
                 raise ConfigError(f"duplicate claim name {name!r}")
             seen.add(name)
-            entry: Dict[str, Any] = {"name": name, "type": c.type}
+            entry: Dict[str, Any] = {"name": name, "type": c.type or ""}
             if c.suggest:
                 entry["suggest"] = c.suggest
             if c.required:

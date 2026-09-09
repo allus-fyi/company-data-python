@@ -91,7 +91,7 @@ def decrypt_change(private_key):
     def _decrypt(event: dict) -> Change:
         return Change.from_api(
             event,
-            type_for_slug=lambda slug: "text",
+            type_for_slug=lambda slug: "text", field_types=_test_field_types,
             decrypt_value=lambda wrapper: decrypt(wrapper, private_key),
         )
 
@@ -639,7 +639,7 @@ def test_poison_decrypt_dead_letters_without_wedging(config, cipher_wrapper, pri
             raise DecryptError("corrupt ciphertext for chg-0002")
         return Change.from_api(
             event,
-            type_for_slug=lambda slug: "text",
+            type_for_slug=lambda slug: "text", field_types=_test_field_types,
             decrypt_value=lambda wrapper: decrypt(wrapper, private_key),
         )
 
@@ -694,7 +694,7 @@ def test_poison_decrypt_with_halt_reraises(config, cipher_wrapper, private_key):
         if event.get("id") == "chg-0001":
             raise DecryptError("undecryptable")
         return Change.from_api(
-            event, type_for_slug=lambda s: "text",
+            event, type_for_slug=lambda s: "text", field_types=_test_field_types,
             decrypt_value=lambda w: decrypt(w, private_key),
         )
 
@@ -707,3 +707,23 @@ def test_poison_decrypt_with_halt_reraises(config, cipher_wrapper, private_key):
     # The un-acked poison event survives in pending/ (halt left it for inspection).
     buf = FileBuffer(config.cache_dir)
     assert [e["id"] for e in buf.pending()] == ["chg-0001"]
+
+
+def _test_field_types():
+    """The vector's own registry — the rows every model test types its values against."""
+    global _TEST_FIELD_TYPES
+    if _TEST_FIELD_TYPES is None:
+        import json as _json
+        import os as _os
+
+        from allus_company_data.field_types import FieldTypeRegistry
+
+        path = _os.path.join(
+            _os.path.dirname(__file__), "..", "testdata", "contract-field-validation-vector.json"
+        )
+        with open(path, "r", encoding="utf-8") as fh:
+            _TEST_FIELD_TYPES = FieldTypeRegistry(_json.load(fh)["registry"])
+    return _TEST_FIELD_TYPES
+
+
+_TEST_FIELD_TYPES = None

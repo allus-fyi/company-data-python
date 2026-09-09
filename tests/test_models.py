@@ -183,7 +183,7 @@ def test_connection_detail_typed_slug_keyed(vector, decrypt_value, encrypt_for_k
 
     conn = Connection.from_api(
         detail,
-        type_for_slug=_type_resolver(),
+        type_for_slug=_type_resolver(), field_types=_test_field_types,
         decrypt_value=decrypt_value,
         identity=identity,
     )
@@ -242,7 +242,7 @@ def test_binary_handle_lazy_fetch_and_decrypt(vector, decrypt_value):
     }
     conn = Connection.from_api(
         detail,
-        type_for_slug=lambda s: "photo",
+        type_for_slug=lambda s: "photo", field_types=_test_field_types,
         decrypt_value=decrypt_value,
         binary_fetch=fetch,
     )
@@ -265,7 +265,7 @@ def test_connection_has_no_person_source_field(vector, decrypt_value):
         "values": {"work_email": {"value": vector["text"]["wrapper"], "live": True}},
     }
     conn = Connection.from_api(
-        detail, type_for_slug=lambda s: "email", decrypt_value=decrypt_value
+        detail, type_for_slug=lambda s: "email", field_types=_test_field_types, decrypt_value=decrypt_value
     )
     # No field_id / source slug anywhere — values are keyed only by YOUR slug.
     serialized = json.dumps(conn.raw)
@@ -297,7 +297,7 @@ def test_change_field_updated_typed_and_id_populated(vector, decrypt_value):
         ]
     }
     changes = Change.list_from_api(
-        body, type_for_slug=lambda s: "email", decrypt_value=decrypt_value
+        body, type_for_slug=lambda s: "email", field_types=_test_field_types, decrypt_value=decrypt_value
     )
 
     f = changes[0]
@@ -336,7 +336,7 @@ def test_change_field_updated_binary_is_lazy_handle(vector, decrypt_value):
         encrypted=True, wrapper=vector["binary"]["wrapper"]
     )
     [chg] = Change.list_from_api(
-        body, type_for_slug=lambda s: "photo", decrypt_value=decrypt_value, binary_fetch=fetch
+        body, type_for_slug=lambda s: "photo", field_types=_test_field_types, decrypt_value=decrypt_value, binary_fetch=fetch
     )
     assert isinstance(chg.value, BinaryHandle)
     assert hashlib.sha256(chg.value.bytes()).hexdigest() == vector["binary"]["inner_full_sha256"]
@@ -347,7 +347,7 @@ def test_change_consent_event_has_slug_no_value():
         {"id": "chg-9", "event": "consent_accepted", "person_user_id": "p",
          "slug": "work_email", "at": "2026-06-17T00:00:00Z"}
     ]}
-    [chg] = Change.list_from_api(body, type_for_slug=lambda s: "email", decrypt_value=lambda w: "")
+    [chg] = Change.list_from_api(body, type_for_slug=lambda s: "email", field_types=_test_field_types, decrypt_value=lambda w: "")
     assert chg.event == "consent_accepted"
     assert chg.slug == "work_email"
     assert chg.value is None  # consent events carry no value
@@ -386,7 +386,7 @@ def test_change_includes_share_code(decrypt_value):
          "person_user_id": "person-2", "at": "2026-06-17T12:00:00Z"},  # no share_code -> None
     ]}
     changes = Change.list_from_api(
-        body, type_for_slug=lambda s: None, decrypt_value=decrypt_value
+        body, type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=decrypt_value
     )
     assert changes[0].share_code == "ABC123"
     assert changes[1].share_code is None
@@ -402,7 +402,7 @@ def test_change_includes_customer_type(decrypt_value):
          "person_user_id": "person-2", "at": "2026-07-07T12:00:00Z"},  # no customer_type -> None
     ]}
     changes = Change.list_from_api(
-        body, type_for_slug=lambda s: None, decrypt_value=decrypt_value
+        body, type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=decrypt_value
     )
     assert changes[0].customer_type == "company"
     assert changes[1].customer_type is None
@@ -415,14 +415,14 @@ def test_connection_includes_customer_type_and_share_code(decrypt_value):
     obj = {"connection_id": "c-1", "user_id": "co-9",
            "customer_type": "company", "share_code": "PARTNER", "values": {}}
     conn = Connection.from_api(
-        obj, type_for_slug=lambda s: None, decrypt_value=decrypt_value
+        obj, type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=decrypt_value
     )
     assert conn.customer_type == "company"
     assert conn.share_code == "PARTNER"
 
     bare = Connection.from_api(
         {"connection_id": "c-2", "user_id": "p-1", "values": {}},
-        type_for_slug=lambda s: None, decrypt_value=decrypt_value,
+        type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=decrypt_value,
     )
     assert bare.customer_type is None
     assert bare.share_code is None
@@ -439,7 +439,7 @@ def test_change_document_status_changed_parses(vector, decrypt_value):
         "person_user_id": "u-1", "share_code": "ABC123",
         "document_id": "doc-9", "status": "ended", "at": "2026-06-22T10:00:00Z",
     }]}
-    [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, decrypt_value=decrypt_value)
+    [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=decrypt_value)
     assert chg.event == "document_status_changed"
     assert chg.document_id == "doc-9"
     assert chg.status == "ended"
@@ -455,7 +455,7 @@ def test_change_document_status_changed_carries_action(decrypt_value):
         "person_user_id": "u-2", "action": "signed",
         "document_id": "doc-7", "status": "active", "at": "2026-06-22T10:00:00Z",
     }]}
-    [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, decrypt_value=decrypt_value)
+    [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=decrypt_value)
     assert chg.event == "document_status_changed"
     assert chg.action == "signed"
     assert chg.document_id == "doc-7" and chg.status == "active"
@@ -471,7 +471,7 @@ def test_change_document_status_changed_carries_cancel_note(decrypt_value):
         "person_user_id": "u-2", "action": "cancelled", "note": "Too expensive",
         "document_id": "doc-9", "status": "ended", "at": "2026-06-30T10:00:00Z",
     }]}
-    [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, decrypt_value=decrypt_value)
+    [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=decrypt_value)
     assert chg.action == "cancelled" and chg.note == "Too expensive"
     assert chg.status == "ended"
 
@@ -529,3 +529,23 @@ def _encrypt_with_vector_pub(vector, plaintext):
     ).decode("ascii")
     from allus_company_data.crypto import load_public_key
     return encrypt_for_public_key(plaintext, load_public_key(spki_b64))
+
+
+def _test_field_types():
+    """The vector's own registry — the rows every model test types its values against."""
+    global _TEST_FIELD_TYPES
+    if _TEST_FIELD_TYPES is None:
+        import json as _json
+        import os as _os
+
+        from allus_company_data.field_types import FieldTypeRegistry
+
+        path = _os.path.join(
+            _os.path.dirname(__file__), "..", "testdata", "contract-field-validation-vector.json"
+        )
+        with open(path, "r", encoding="utf-8") as fh:
+            _TEST_FIELD_TYPES = FieldTypeRegistry(_json.load(fh)["registry"])
+    return _TEST_FIELD_TYPES
+
+
+_TEST_FIELD_TYPES = None

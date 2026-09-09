@@ -35,8 +35,8 @@ use the client methods inside an app.
 from allus_company_data import verify_webhook, parse_webhook, handle_webhook
 
 verify_webhook(raw_body, headers, config) -> bool
-parse_webhook(raw_body, headers, config, *, type_for_slug, decrypt_value, binary_fetch=None) -> Change
-handle_webhook(raw_body, headers, config, *, type_for_slug, decrypt_value, binary_fetch=None) -> Change
+parse_webhook(raw_body, headers, config, *, type_for_slug, field_types, decrypt_value, binary_fetch=None) -> Change
+handle_webhook(raw_body, headers, config, *, type_for_slug, field_types, decrypt_value, binary_fetch=None) -> Change
 ```
 
 ## In a web route
