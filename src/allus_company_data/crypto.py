@@ -452,6 +452,15 @@ class BinaryHandle:
         return len(data)
 
 
+def compute_plain_sha256(data: bytes) -> str:
+    """SHA-256 of raw PDF bytes, lowercase hex — the ``plain_sha256`` a signable file
+    document's create call and every sign/accept act must agree on. Exposed so a
+    caller can precompute or verify it; ``create_document`` calls this itself when a
+    ``plain_sha256`` override is not supplied.
+    """
+    return hashlib.sha256(data).hexdigest()
+
+
 def hash_matches(salt: str, expected_hash: str, plaintext: str) -> bool:
     """Verified fields: True iff sha256(salt ‖ plaintext) == expected_hash (hex).
 

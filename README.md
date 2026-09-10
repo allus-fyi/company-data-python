@@ -383,8 +383,10 @@ RequestField { slug, label, type, one_time, mandatory, verified, verified_max_ag
 Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
 Value        { value, live, updated_at, verified, verified_at, verified_expires_at,
                verified_method, verified_provider, verification_id }
-Change       { id, event, person_id, slug?, value?, live?, document_id?, status?, at }
-Document     { id, kind, name, description, status, payload_kind, is_private, value, metadata, created_at, updated_at }
+Change       { id, event, person_id, slug?, value?, live?, document_id?, status?, at,
+               sealed_at?, plain_sha256?, signer_first_name?, signer_last_name?, signer_name_verified? }
+Document     { id, kind, name, description, status, payload_kind, is_private, value, metadata,
+               created_at, updated_at, plain_sha256, sealed_at, signatures }
 LogEntry     { type, message, metadata, at }
 ```
 
@@ -778,14 +780,20 @@ contract = client.create_document(
 )
 
 # A per-person FILE — the bytes are encrypted for the recipient automatically.
+# plain_sha256 (SHA-256 of the raw PDF bytes) is computed for you when omitted;
+# it is required by the server for a signable file document
+# (requires_signature/requires_acceptance) and ignored on a json document.
 with open("agreement.pdf", "rb") as fh:
+    pdf_bytes = fh.read()
     pdf = client.create_document(
         kind="legal_document",
         name="Signed agreement",
         payload_kind="file",
         person_user_id="019yyyyyyyyyyyyyyyyyyyyyyyyy",
-        file_bytes=fh.read(),
+        file_bytes=pdf_bytes,
         file_mime="application/pdf",
+        requires_signature=True,
+        # plain_sha256=compute_plain_sha256(pdf_bytes),  # optional — computed for you otherwise
     )
 
 # is_private without a target → ConfigError (a broadcast can't be locked).
@@ -839,8 +847,9 @@ client.delete_document(notice.id)
 ```
 
 A `Document` carries `id, kind, name, description, status, payload_kind,
-is_private, value, metadata, created_at, updated_at` (and `.raw`). Use `.json()`
-on a `payload_kind="json"` document to get the decrypted plaintext object.
+is_private, value, metadata, created_at, updated_at, plain_sha256, sealed_at,
+signatures` (and `.raw`). Use `.json()` on a `payload_kind="json"` document to
+get the decrypted plaintext object.
 
 A contract-flow-generated document can also read `status="waiting"` — a run-participant
 copy whose signer has not been reached yet in the run's ordered signing plan. It is
@@ -850,12 +859,36 @@ read-only: `update_document_status` raises with `error_key="documents.run_manage
 run's own advance, sign/accept, or a run cancel/decline. Such a document's
 `run_signatures` carries the run's ordered signature summary.
 
+### The document seal
+
+Completing every required signature/acceptance on a signable document is not the
+same as sealing it. When the last one is recorded the platform *attempts*, on that
+same request, to append a Signatures page and sign the whole PDF with a platform
+certificate, replacing every party's copy with the sealed PDF — the platform's own
+attestation, layered over each signer's existing act. The attempt can fail (no PDF
+bytes on the completing act, a byte mismatch, the sealing service unavailable, or a
+custodian-completed ward act, which never carries bytes) without affecting the
+signatures themselves or the document's completed status — it is simply left
+unsealed, and any party can seal it afterwards from their own device or the owning
+company's portal (no SDK call triggers a seal). `doc.sealed_at` is `None` until a
+seal actually succeeds; `doc.plain_sha256` is the SHA-256 of the document's
+unencrypted PDF bytes (`None` on a json document, and on a file document with no
+stored plaintext hash — such a document cannot be sealed). Each entry of `doc.signatures`
+additionally carries `plain_sha256` (the hash the signer's client computed over the
+bytes it showed), `signer_first_name`, `signer_last_name` (the acting human's own
+profile name) and `signer_name_verified` (`True` iff the submitted name matched that
+account's verified ID name) beside its existing `action`, `method`, `content_sha256`,
+`ip`, `user_agent`, `created_at` members.
+
 ### Reacting to a status change in the feed
 
 When someone advances one of your documents (e.g. signs it), the platform emits a
 **`document_status_changed`** change. In a `process_changes` handler it carries
 `.document_id` and `.status` (and **no** `slug`/`value` — it's a lifecycle event,
-not a field value):
+not a field value). A transition to `active` additionally carries the same seal
+state the document read carries — `.sealed_at`, `.plain_sha256`,
+`.signer_first_name`, `.signer_last_name`, `.signer_name_verified` — so you never
+need a follow-up `document(id)` call just to learn a run sealed:
 
 ```python
 def handle(change):

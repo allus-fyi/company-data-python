@@ -64,6 +64,7 @@ from .crypto import decrypt as crypto_decrypt
 from .crypto import (
     BinaryFetchResult,
     BinaryHandle,
+    compute_plain_sha256,
     encrypt_for_public_key,
     load_private_key,
     load_public_key,
@@ -641,6 +642,7 @@ class Client:
         file_mime: Optional[str] = None, file_name: Optional[str] = None,
         requires_signature: bool = False, requires_acceptance: bool = False,
         metadata: Optional[dict] = None, status: Optional[str] = None,
+        plain_sha256: Optional[str] = None,
     ) -> Document:
         """Create a company document for a connection / person (PER-PERSON), or BROADCAST (no target).
 
@@ -659,6 +661,11 @@ class Client:
 
         is_private is a DISPLAY-ONLY flag passed through to the API — it governs the recipient
         device's lock vs decrypt-on-load behaviour, NOT whether the value is encrypted.
+
+        For payload_kind='file', `plain_sha256` (SHA-256 of the raw PDF bytes, lowercase hex) is
+        computed from `file_bytes` via `compute_plain_sha256` when not given explicitly, and sent
+        with the create call — required by the server for a signable file document, optional for
+        any other. Ignored for payload_kind='json'.
         """
         if payload_kind not in ("json", "file"):
             raise ConfigError("payload_kind must be 'json' or 'file'")
@@ -715,6 +722,7 @@ class Client:
         # file: create the metadata row first, then upload bytes to /{id}/file.
         if file_bytes is None:
             raise ConfigError("file_bytes is required for payload_kind='file'")
+        body["plain_sha256"] = plain_sha256 or compute_plain_sha256(file_bytes)
         created = self._http.post(_DOCUMENTS, json_body=body)
         doc = Document.from_api(_doc_obj(created), decrypt_value=self._decrypt_value)
         # The metadata row exists before the bytes are uploaded; if the upload

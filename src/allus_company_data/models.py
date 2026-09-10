@@ -113,6 +113,25 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return bool(value)
 
 
+def _normalize_signatures(signatures: Any) -> list:
+    """Coerce the one schema-defined boolean inside each signature map entry.
+
+    The signature list stays an untyped map (matching every existing signature
+    field), but signer_name_verified is a boolean in the schema — XML carries it
+    as the string "false"/"true", and a caller testing that raw string for
+    truthiness reads a false verification as verified. Coerce it the same way
+    every other boolean field on this transport is coerced.
+    """
+    if not isinstance(signatures, list):
+        return []
+    out = []
+    for entry in signatures:
+        if isinstance(entry, dict) and "signer_name_verified" in entry:
+            entry = {**entry, "signer_name_verified": _coerce_bool(entry.get("signer_name_verified"))}
+        out.append(entry)
+    return out
+
+
 # ── definitions ──────────────────────────────────────────────────────────────
 
 
@@ -431,6 +450,11 @@ class Change:
     content_sha256: Optional[str] = None  # set on a signature: SHA-256 of the signed content
     signed_at: Optional[str] = None    # set on a signature: ISO timestamp the signature was recorded
     cancel_effective_date: Optional[str] = None  # set on a cancelled document_status_changed: ISO date the cancellation takes effect
+    sealed_at: Optional[str] = None    # set on document_status_changed: when the platform seal was applied; null until sealed
+    plain_sha256: Optional[str] = None  # set on document_status_changed: SHA-256 of the document's unencrypted PDF bytes; null on a JSON contract
+    signer_first_name: Optional[str] = None  # set on document_status_changed: the signature's own signer evidence
+    signer_last_name: Optional[str] = None
+    signer_name_verified: Optional[bool] = None  # true iff the submitted name matched the signer's verified ID name
     request_id: Optional[str] = None   # set on connection_request_accepted | connection_request_rejected
     public_key_sha256: Optional[str] = None  # set on key_rotated — SHA-256 fingerprint of the person's NEW public key
     connection_id: Optional[str] = None  # set on message_received — the connection to reply/ack on
@@ -507,6 +531,11 @@ class Change:
             content_sha256=obj.get("content_sha256") if event == "document_status_changed" else None,
             signed_at=obj.get("signed_at") if event == "document_status_changed" else None,
             cancel_effective_date=obj.get("cancel_effective_date") if event == "document_status_changed" else None,
+            sealed_at=obj.get("sealed_at") if event == "document_status_changed" else None,
+            plain_sha256=obj.get("plain_sha256") if event == "document_status_changed" else None,
+            signer_first_name=obj.get("signer_first_name") if event == "document_status_changed" else None,
+            signer_last_name=obj.get("signer_last_name") if event == "document_status_changed" else None,
+            signer_name_verified=_coerce_bool(obj.get("signer_name_verified")) if event == "document_status_changed" else None,
             request_id=obj.get("request_id")
             if event in ("connection_request_accepted", "connection_request_rejected")
             else None,
@@ -579,7 +608,12 @@ class Document:
     updated_at: Optional[datetime]
     requires_signature: bool = False
     requires_acceptance: bool = False
-    signatures: list = field(default_factory=list)  # contract audit trail (action/method/content_sha256/...)
+    plain_sha256: Optional[str] = None  # SHA-256 of the unencrypted PDF bytes; null on a JSON contract
+    sealed_at: Optional[datetime] = None  # when the platform seal was applied; null until sealed
+    # Contract audit trail (company-side reads only), one dict per signature: action, method,
+    # content_sha256, plain_sha256, signer_first_name, signer_last_name, signer_name_verified,
+    # ip, user_agent, created_at.
+    signatures: list = field(default_factory=list)
     # Present only on a contract-flow run-participant document: the run's ordered signature
     # summary, one entry per participant owing an act — each
     # {party_key, document_id, position, status, action, acted_at}. None on any other document.
@@ -615,7 +649,9 @@ class Document:
             updated_at=_parse_iso_dt(obj.get("updated_at")),
             requires_signature=bool(_coerce_bool(obj.get("requires_signature"))),
             requires_acceptance=bool(_coerce_bool(obj.get("requires_acceptance"))),
-            signatures=obj.get("signatures") or [],
+            plain_sha256=obj.get("plain_sha256"),
+            sealed_at=_parse_iso_dt(obj.get("sealed_at")),
+            signatures=_normalize_signatures(obj.get("signatures")),
             run_signatures=obj.get("run_signatures"),
             _decrypt_value=decrypt_value, raw=obj,
         )

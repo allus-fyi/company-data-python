@@ -18,6 +18,7 @@ from .config import Config
 from .crypto import (
     BinaryFetchResult,
     BinaryHandle,
+    compute_plain_sha256,
     decrypt,
     encrypt_for_public_key,
     load_private_key,
@@ -66,6 +67,7 @@ __all__ = [
     "load_public_key",
     "decrypt",
     "encrypt_for_public_key",
+    "compute_plain_sha256",
     "BinaryHandle",
     # What a custom `binary_fetch` must return (the two 200 shapes of the
     # company-facing file endpoint).
