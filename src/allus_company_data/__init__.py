@@ -18,6 +18,7 @@ from .config import Config
 from .crypto import (
     BinaryFetchResult,
     BinaryHandle,
+    BinaryPage,
     compute_plain_sha256,
     decrypt,
     encrypt_for_public_key,
@@ -69,7 +70,9 @@ __all__ = [
     "encrypt_for_public_key",
     "compute_plain_sha256",
     "BinaryHandle",
-    # What a custom `binary_fetch` must return (the two 200 shapes of the
+    # One page of a multi-page binary answer, as `BinaryHandle.pages()` returns it.
+    "BinaryPage",
+    # What a custom `binary_fetch` must return (the three 200 shapes of the
     # company-facing file endpoint).
     "BinaryFetchResult",
     # errors

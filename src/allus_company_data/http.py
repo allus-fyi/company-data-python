@@ -186,12 +186,14 @@ class HttpClient:
     def get_response(self, path: str) -> "requests.Response":
         """GET returning the whole 2xx response — status, headers AND raw body, no parse.
 
-        The company-facing binary file endpoints have two 200 shapes (a JSON
-        wrapper for an encrypted answer, raw file bytes for a plaintext one) that are
-        told apart by ``Content-Type``, and both carry an ``X-Allus-Content-Sha256``
-        digest header. Neither :meth:`get` (which parses) nor :meth:`get_raw` (which
-        drops the headers) can express that, so this hands the caller the response
-        itself. Auth/refresh/retry and error mapping are identical.
+        The company-facing binary file endpoints have three 200 shapes (a JSON
+        wrapper for an encrypted answer, a JSON plaintext envelope, raw file bytes)
+        — the bytes shape told apart by ``Content-Type`` and the two JSON ones by the
+        body's ``encrypted`` member — and all three carry an
+        ``X-Allus-Content-Sha256`` digest header. Neither :meth:`get` (which parses)
+        nor :meth:`get_raw` (which drops the headers) can express that, so this hands
+        the caller the response itself. Auth/refresh/retry and error mapping are
+        identical.
         """
         return self._request("GET", path, want_response=True)
 

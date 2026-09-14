@@ -424,7 +424,7 @@ PRIMITIVE, so a type added as a row types itself with no SDK release.
 
 | The type's resolved… | Python `value` |
 |----------------------|----------------|
-| storage lane `photo` / `document` | a lazy `BinaryHandle` — see below |
+| storage lane `photo` / `document` | a lazy `BinaryHandle` — pages, declared entries and file bytes; see below |
 | primitive `composite` | `dict` — the decrypted plaintext is a JSON object, parsed for you |
 | primitive `date` | `datetime.date` (falls back to the raw string if it can't be parsed) |
 | primitive `multilist` | `list` of the chosen option strings |
@@ -472,36 +472,57 @@ you call `.bytes()` or `.save()`:
 ```python
 handle = conn.values["passport_scan"].value   # BinaryHandle (no network yet)
 
-data = handle.bytes()                          # GET the slot file → the file bytes
-n    = handle.save("/tmp/passport.jpg")        # same, written to disk; returns bytes written
+pages = handle.pages()                         # GET the slot file → every page, in order
+meta  = handle.metadata()                      # the entries the type declares
+data  = handle.bytes()                         # the primary file bytes (single-file answers)
+n     = handle.save("/tmp/contract.pdf")       # same, written to disk; returns bytes written
 print(handle.value_url)                         # the opaque slot-keyed URL it fetches from
-print(handle.content_type)                      # what the bytes arrived as, once fetched
-print(handle.content_sha256)                    # the platform's digest of exactly those bytes
+print(handle.content_type)                      # what the answer arrived as, once fetched
+print(handle.content_sha256)                    # the platform's digest of the served artifact
+
+for page in pages:
+    print(page.label, page.name, page.mime, len(page.bytes))
+print(meta.get("document_number"), meta.get("expiry_date"), meta.get("name"))
 ```
 
-`.bytes()` GETs the slot-keyed file endpoint and returns the file bytes — but that
-endpoint has **two 200 shapes, and which one you get is the person's choice, not
-yours**. It depends on whether their source field is private, they can change that
-at any time, and nothing announces it in advance:
+The slot-keyed file endpoint has **three 200 shapes, and which one you get is not
+yours to choose**. It depends on whether the person's source field is private AND on
+the type of the field they answered with; both can change, and nothing announces
+either in advance:
 
 * **private source** → `application/json`, `{"encrypted": true, "value": <wrapper>}`.
-  The handle decrypts the wrapper with your service key, parses the inner JSON
-  envelope (`{"full": "data:…"}` for photos, `{"file": "data:…"}` for documents) and
-  base64-decodes the data URI into the file bytes.
-* **plaintext source** → the file's own `Content-Type` (`image/jpeg`,
-  `application/pdf`, …) and the body IS the file. Nothing is decrypted and no service
-  key is needed.
+  The handle decrypts the wrapper with your service key into the JSON ENVELOPE.
+* **non-private source whose type stores more than one file or declares metadata
+  entries** (the ID-document subtypes and `legal_document`) → `application/json`,
+  `{"encrypted": false, "value": "<envelope>"}` — the same envelope in the clear.
+  Nothing is decrypted.
+* **every other non-private source** → the file's own `Content-Type` (`image/jpeg`,
+  `application/pdf`, …) and the body IS the file.
 
-The handle hides the difference: `.bytes()`/`.save()` give you the file either way.
-The shapes are told apart on the response `Content-Type`, never by looking at the
-body — a PDF that happened to start with a brace must not be mistaken for a wrapper.
-The result is cached on the handle, so repeated calls don't re-fetch.
+The envelope is `{"full": "data:…", "thumb": …}` for a photo, `{"file": "data:…", …}`
+for a single-file document, and `{"pages": [{"label": …, "file": "data:…", …}], …}` for
+a multi-page one, with every entry the type declares beside it.
 
-Every 200 carries `X-Allus-Content-Sha256`, the sha256 of exactly the bytes returned;
+The handle hides the difference. `.pages()` gives you the pages of a multi-page answer
+(and `[]` for a single-file one); `.metadata()` gives you the declared entries
+(`document_number`, `expiry_date`, `issuing_country`, `name`, …) and `{}` when the
+type declares none; `.bytes()`/`.save()` give you the primary file. **On a multi-page
+envelope `.bytes()`/`.save()` raise `DecryptError("multi-page envelope: use pages")`**
+rather than handing back the front page as though it were the whole document.
+`.metadata()` carries **no ordering guarantee** — read the envelope string yourself if
+you need the declared order.
+
+The raw-bytes shape is told apart on the response `Content-Type`, never by looking at
+the body — a PDF that happened to start with a brace must not be mistaken for a
+wrapper — and the two JSON shapes on the body's `encrypted` member. All four
+accessors share ONE lazy fetch: whichever you call first performs it, and the result
+is cached, so repeated calls don't re-fetch.
+
+Every 200 carries `X-Allus-Content-Sha256`, the sha256 of the **served artifact** —
+the raw bytes on the bytes shape, the served `value` string on either JSON shape;
 `handle.content_sha256` is that header (and `handle.content_type` the Content-Type),
 so you can record what you received and later show your archived copy has not
-drifted. It is the platform's word, not a signature. There is no variant selection —
-one slot has one byte sequence and therefore one digest.
+drifted. It is the platform's word, not a signature. There is no variant selection.
 
 A frozen (share-once) answer is retained for 90 days. After that the endpoint returns
 **410 `company_data.file_expired`**, which surfaces as an `ApiError` whose `details`
@@ -1115,12 +1136,15 @@ RSA-OAEP-SHA256 unwraps the AES key, then AES-256-GCM decrypts the payload. **Th
 platform only ever holds ciphertext — it never sees your plaintext.**
 
 **Binary fetch.** A binary value is a lazy `BinaryHandle` over a slot-keyed
-`value_url`. On `.bytes()`/`.save()` it GETs that file endpoint and classifies the
-response on its `Content-Type`: an encrypted answer (`{"encrypted":true,"value":…}`)
-runs the same service-key decrypt to a JSON file-envelope and base64-decodes its data
-URI, while a plaintext answer's body already IS the file. Either way you get the file
-bytes, plus the response's `X-Allus-Content-Sha256` on `.content_sha256`.
-(Slot-keyed, never source-field-keyed.)
+`value_url`. On `.bytes()`/`.pages()`/`.metadata()`/`.save()` it GETs that file
+endpoint once and classifies the response — the raw-bytes shape on its
+`Content-Type`, the two JSON shapes on the body's `encrypted` member: an encrypted
+answer (`{"encrypted":true,"value":…}`) runs the same service-key decrypt to the JSON
+envelope, an `{"encrypted":false,"value":"<envelope>"}` answer carries that envelope
+in the clear, and a plaintext answer's body already IS the file. Either way you get
+the file, its pages and its declared entries, plus the response's
+`X-Allus-Content-Sha256` on `.content_sha256`. (Slot-keyed, never
+source-field-keyed.)
 
 **The drain-on-fetch feed.** `process_changes` delegates to a `Pump` wired to a
 `fetch_changes` closure (`GET /changes?limit=`, returning raw ciphertext events)

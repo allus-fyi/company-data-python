@@ -217,24 +217,30 @@ class BinaryFetchResult:
     """One response from a company-facing binary file endpoint, in the shape a
     :class:`BinaryHandle` needs.
 
-    The route has TWO 200 shapes and the company cannot predict which it will
-    get, because the answer depends on whether the person's source field is private,
-    which is theirs to change:
+    The route has THREE 200 shapes and the company cannot predict which it will
+    get, because the answer depends on the person's own privacy setting and on the
+    TYPE of the field they answered with, neither of which the company chooses:
 
     * **encrypted** — ``application/json``, ``{"encrypted":true,"value":<wrapper>}``.
-      The wrapper decrypts to the binary ENVELOPE string, from which the file bytes
-      are extracted.
-    * **plaintext** — the file's own ``Content-Type`` (e.g. ``image/jpeg``,
-      ``application/pdf``) and the body IS the file bytes. Nothing to decrypt.
+      The wrapper decrypts to the binary ENVELOPE string.
+    * **envelope** — ``application/json``, ``{"encrypted":false,"value":"<envelope>"}``.
+      The plaintext envelope string itself, for a non-private source whose type stores
+      more than one file or declares metadata entries. Nothing to decrypt.
+    * **plaintext bytes** — the file's own ``Content-Type`` (e.g. ``image/jpeg``,
+      ``application/pdf``) and the body IS the file bytes.
 
-    The distinction is made on the response's ``Content-Type``, never guessed from
-    the body: a plaintext answer's first byte is whatever the file starts with, and a
-    PDF or a JPEG that happened to begin with a brace would be indistinguishable from
-    a wrapper by sniffing.
+    The bytes shape is told apart from the two JSON ones on the response's
+    ``Content-Type``, never guessed from the body: a plaintext answer's first byte is
+    whatever the file starts with, and a PDF or a JPEG that happened to begin with a
+    brace would be indistinguishable from a wrapper by sniffing. Inside a JSON body it
+    is ``encrypted`` that decides; a JSON body that does not carry ``encrypted: false``
+    with a string ``value`` is the wrapper arm, which is what the bare-wrapper routes
+    (a company's own contract copy, its run slot file) answer with.
 
-    ``content_sha256`` is the platform's ``X-Allus-Content-Sha256`` — the sha256 of
-    exactly these bytes, present on both shapes — so a consumer can record what it
-    received and later prove its archived copy has not drifted.
+    ``content_sha256`` is the platform's ``X-Allus-Content-Sha256`` — the sha256 of the
+    served artifact: the raw bytes on the bytes shape, the served ``value`` string on
+    either JSON shape — so a consumer can record what it received and later prove its
+    archived copy has not drifted.
 
     The file bytes ride on ``data`` rather than on a field named ``bytes``:
     ``bytes`` is the builtin this module annotates with, and shadowing it inside
@@ -246,6 +252,25 @@ class BinaryFetchResult:
     data: bytes | None = None
     content_type: str | None = None
     content_sha256: str | None = None
+    envelope: str | None = None
+
+
+@dataclass(frozen=True)
+class BinaryPage:
+    """One page of a multi-page binary answer (an ID document's front, back, …).
+
+    ``label`` is the page's own label (``front`` | ``back`` | ``additional``),
+    ``name`` the original filename the person uploaded it under, ``mime`` the
+    server-derived media type, and ``bytes`` the decoded page bytes.
+
+    The member names are the six-SDK contract, so shared integration code reads the
+    same page record in every language.
+    """
+
+    label: str | None
+    name: str | None
+    mime: str | None
+    bytes: bytes
 
 
 class BinaryHandle:
@@ -253,24 +278,27 @@ class BinaryHandle:
 
     A binary answer is stored server-side as a file, exposed in the hardened API
     as a slot-keyed ``value_url`` (never the source field). ``.bytes()`` and
-    ``.save()`` GET that URL and return the FILE BYTES either way — the caller never
-    has to know which of the two response shapes arrived.
+    ``.save()`` GET that URL and return the FILE BYTES; ``.pages()`` and
+    ``.metadata()`` expose the rest of the envelope. The caller never has to know
+    which of the three response shapes arrived.
 
-    THERE ARE TWO SHAPES, AND WHICH ONE ARRIVES IS THE PERSON'S CHOICE, NOT
-    THE COMPANY'S. Whether the person's source field is private decides it, they can
-    change it at any time, and nothing in the API announces it in advance:
+    THERE ARE THREE SHAPES, AND WHICH ONE ARRIVES IS NOT THE COMPANY'S CHOICE.
+    The person's own privacy setting and the TYPE of the field they answered with
+    decide it, either can change at any time, and nothing in the API announces it in
+    advance:
 
     * **private source** → ``application/json``
       ``{"encrypted":true,"value":<wrapper>}``. The wrapper decrypts to a JSON
-      envelope STRING (photo: ``{"full":"data:...","thumb":...}``; document:
-      ``{"file":"data:...",...}``) — NOT raw bytes — whose primary data-URI payload
-      (``full`` for photos, ``file`` for documents) base64-decodes to the file.
-    * **plaintext source** → the file's own ``Content-Type`` and the body IS the
-      file. There is nothing to decrypt, and a handle built this way needs no service
-      key at all.
+      envelope STRING (photo: ``{"full":"data:...","thumb":...}``; single-file
+      document: ``{"file":"data:...",...}``; multi-page document:
+      ``{"pages":[{"file":"data:...",...}],...}``) — NOT raw bytes.
+    * **non-private source whose type stores pages or declares entries** →
+      ``application/json`` ``{"encrypted":false,"value":"<envelope>"}``. The same
+      envelope string, in the clear. There is nothing to decrypt.
+    * **every other non-private source** → the file's own ``Content-Type`` and the
+      body IS the file. A handle built this way needs no service key at all.
 
-    Photos resolve to the ``full`` representation. There is no variant selection: one
-    slot has one byte sequence and therefore one digest.
+    Photos resolve to the ``full`` representation. There is no variant selection.
 
     The fetch + decrypt are supplied by the client as plain callables:
 
@@ -284,10 +312,25 @@ class BinaryHandle:
 
     When the decrypted envelope is already in hand, a handle can also be built
     directly from ``envelope_json`` (no fetch).
+
+    ``bytes()``, ``pages()`` and ``metadata()`` share ONE lazy fetch: whichever is
+    called first performs it, and every later call answers from the parsed envelope.
     """
 
     # Envelope keys that hold the primary binary data URI, in priority order.
     _DATA_URI_KEYS = ("full", "file")
+
+    # Envelope members that describe the envelope itself rather than the type's own
+    # declared entries — everything NOT in this set is metadata.
+    _ENVELOPE_MEMBERS = (
+        "pages",
+        "file",
+        "full",
+        "thumb",
+        "original_name",
+        "mime_type",
+        "size",
+    )
 
     def __init__(
         self,
@@ -316,12 +359,18 @@ class BinaryHandle:
 
     @property
     def content_sha256(self) -> str | None:
-        """The platform's ``X-Allus-Content-Sha256`` for the bytes this handle fetched.
+        """The platform's ``X-Allus-Content-Sha256`` — the digest of the SERVED ARTIFACT.
 
-        The sha256 of exactly what :meth:`bytes` returns, so a consumer can record it
-        and later show that its archived copy has not drifted. ``None`` until
-        something has been fetched, and on a handle built from an envelope that was
-        never fetched through this class.
+        Which artifact that is follows the response arm: the raw bytes when the answer
+        arrived as bytes, and the served ``value`` string on either JSON arm — the
+        ciphertext wrapper for a private source, the plaintext envelope for a
+        non-private one. It is NOT "the sha256 of what :meth:`bytes` returns": on an
+        envelope carrying pages :meth:`bytes` raises, and on an envelope carrying one
+        file it returns the decoded payload rather than the envelope string.
+
+        A consumer can record it and later show that its archived copy has not
+        drifted. ``None`` until something has been fetched, and on a handle built from
+        an envelope that was never fetched through this class.
 
         It is the platform's word, not a signature: it proves agreement with the
         platform's record, not anything to a third party who doubts that record.
@@ -354,7 +403,11 @@ class BinaryHandle:
         if not result.encrypted:
             # A plaintext answer needs no service key. Requiring `decrypt` here would
             # make a handle built without one fail on exactly the answers that do not
-            # need it.
+            # need it. The envelope arm is plaintext too — the same envelope string the
+            # wrapper arm decrypts to — so both JSON arms converge here.
+            if result.envelope is not None:
+                self._envelope_json = result.envelope
+                return
             self._plain_bytes = result.data if result.data is not None else b""
             return
         if self._decrypt is None:
@@ -375,12 +428,10 @@ class BinaryHandle:
         return self._envelope_json
 
     @staticmethod
-    def parse_envelope_bytes(envelope_json: str) -> bytes:
-        """Turn a decrypted binary envelope STRING into the primary file bytes.
+    def _parse_envelope(envelope_json: str) -> dict:
+        """The ONE envelope parser both JSON arms go through.
 
-        Photo envelope -> the ``full`` data-URI payload; document envelope ->
-        the ``file`` data-URI payload. Raises :class:`DecryptError` on a
-        malformed envelope.
+        Raises :class:`DecryptError` on anything that is not a JSON object.
         """
         try:
             envelope = json.loads(envelope_json)
@@ -388,18 +439,11 @@ class BinaryHandle:
             raise DecryptError("binary envelope is not valid JSON") from exc
         if not isinstance(envelope, dict):
             raise DecryptError("binary envelope must be a JSON object")
+        return envelope
 
-        data_uri = None
-        for key in BinaryHandle._DATA_URI_KEYS:
-            if isinstance(envelope.get(key), str):
-                data_uri = envelope[key]
-                break
-        if data_uri is None:
-            raise DecryptError(
-                "binary envelope has no 'full'/'file' data-URI payload"
-            )
-
-        # data:<mime>;base64,<payload>
+    @staticmethod
+    def _decode_data_uri(data_uri: str) -> bytes:
+        """``data:<mime>;base64,<payload>`` -> the decoded payload."""
         marker = "base64,"
         idx = data_uri.find(marker)
         if idx == -1:
@@ -410,11 +454,112 @@ class BinaryHandle:
         except (ValueError, base64.binascii.Error) as exc:
             raise DecryptError("binary data-URI payload is not valid base64") from exc
 
+    @staticmethod
+    def parse_envelope_bytes(envelope_json: str) -> bytes:
+        """Turn a decrypted binary envelope STRING into the primary file bytes.
+
+        Photo envelope -> the ``full`` data-URI payload; single-file document
+        envelope -> the ``file`` data-URI payload. A MULTI-PAGE envelope has no single
+        primary file, so it raises rather than handing back the first page as though it
+        were the whole document. Raises :class:`DecryptError` on a malformed envelope.
+        """
+        envelope = BinaryHandle._parse_envelope(envelope_json)
+
+        data_uri = None
+        for key in BinaryHandle._DATA_URI_KEYS:
+            if isinstance(envelope.get(key), str):
+                data_uri = envelope[key]
+                break
+        if data_uri is None:
+            if isinstance(envelope.get("pages"), list) and envelope["pages"]:
+                raise DecryptError("multi-page envelope: use pages")
+            raise DecryptError(
+                "binary envelope has no 'full'/'file' data-URI payload"
+            )
+
+        return BinaryHandle._decode_data_uri(data_uri)
+
+    def pages(self) -> list[BinaryPage]:
+        """The envelope's pages, in envelope order — empty for a single-file envelope.
+
+        Lazy exactly as :meth:`bytes` is: the first call of ``bytes``, ``pages`` or
+        ``metadata`` performs the one fetch and optional decrypt, and every later call
+        answers from the parsed envelope. A handle built from an envelope string needs
+        no fetch. A plaintext-BYTES answer carries no envelope, so it has no pages.
+
+        Raises :class:`DecryptError` on a failed fetch or decrypt, or a malformed
+        envelope.
+        """
+        envelope = self._envelope_or_none()
+        if envelope is None:
+            return []
+        raw = envelope.get("pages")
+        if not isinstance(raw, list):
+            return []
+        out: list[BinaryPage] = []
+        for page in raw:
+            if not isinstance(page, dict) or not isinstance(page.get("file"), str):
+                raise DecryptError("binary envelope page has no data-URI payload")
+            out.append(
+                BinaryPage(
+                    label=page["label"] if isinstance(page.get("label"), str) else None,
+                    name=(
+                        page["original_name"]
+                        if isinstance(page.get("original_name"), str)
+                        else None
+                    ),
+                    mime=(
+                        page["mime_type"]
+                        if isinstance(page.get("mime_type"), str)
+                        else None
+                    ),
+                    bytes=BinaryHandle._decode_data_uri(page["file"]),
+                )
+            )
+        return out
+
+    def metadata(self) -> dict[str, str | None]:
+        """Every declared entry the envelope carries, as a plain map.
+
+        Keys are every string-keyed envelope member other than the envelope's own
+        (``pages``, ``file``, ``full``, ``thumb``, ``original_name``, ``mime_type``,
+        ``size``); values are the stored string, or ``None`` for an entry the person
+        left unset. ``name`` — the holder name an ID provider extracted — is a member
+        like any other and appears here.
+
+        **The map carries no ordering guarantee.** A consumer that needs the type's
+        declared order reads the envelope string itself.
+
+        Empty for a photo, for a plain document that declares no entries, and for a
+        plaintext-BYTES answer. Lazy exactly as :meth:`pages` is.
+        """
+        envelope = self._envelope_or_none()
+        if envelope is None:
+            return {}
+        out: dict[str, str | None] = {}
+        for key, value in envelope.items():
+            if not isinstance(key, str) or key in BinaryHandle._ENVELOPE_MEMBERS:
+                continue
+            out[key] = value if isinstance(value, str) else None
+        return out
+
+    def _envelope_or_none(self) -> dict | None:
+        """The parsed envelope, fetching+decrypting on first use.
+
+        ``None`` when the answer is plaintext BYTES, which carries no envelope at all.
+        """
+        if self._envelope_json is None:
+            self._fetch_once()
+            if self._envelope_json is None:
+                return None
+        return BinaryHandle._parse_envelope(self._envelope_json)
+
     def bytes(self) -> bytes:
         """Fetch (if needed), decrypt, and return the decoded primary file bytes.
 
-        A plaintext-shaped answer short-circuits here — its body already IS the
-        file, so there is no envelope to parse and no service key to apply.
+        A plaintext-BYTES answer short-circuits here — its body already IS the
+        file, so there is no envelope to parse and no service key to apply. A
+        MULTI-PAGE envelope raises: use :meth:`pages`.
         """
         if self._plain_bytes is not None:
             return self._plain_bytes

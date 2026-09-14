@@ -71,7 +71,7 @@ no SDK release.
 
 | The type's resolved… | Python `value` | Notes |
 |----------------------|----------------|-------|
-| storage lane `photo` / `document` | `BinaryHandle` | Lazy — nothing fetched/decrypted until `.bytes()`/`.save()`. |
+| storage lane `photo` / `document` | `BinaryHandle` | Lazy — nothing fetched/decrypted until `.bytes()`/`.pages()`/`.metadata()`/`.save()`. |
 | primitive `composite` | `dict` | The decrypted plaintext is a JSON object → parsed. A non-JSON value raises `DecryptError`. |
 | primitive `date` | `datetime.date` | Parsed from ISO `YYYY-MM-DD` (the leading 10 chars); falls back to the raw string if unparseable. |
 | primitive `multilist` | `list` | The chosen option strings, parsed from the JSON array. |
@@ -93,27 +93,54 @@ A lazy handle for a binary value. No network or decryption happens at constructi
 
 ```python
 class BinaryHandle:
-    value_url: str | None             # the opaque slot-keyed file URL (read-only)
-    content_type: str | None          # the Content-Type the bytes arrived with (after a fetch)
-    content_sha256: str | None        # the platform's X-Allus-Content-Sha256 for those bytes
-    def bytes(self) -> bytes          # fetch (if needed) → the primary file bytes
-    def save(self, path: str) -> int  # write bytes() to path; returns bytes written
+    value_url: str | None                       # the opaque slot-keyed file URL (read-only)
+    content_type: str | None                    # the Content-Type the bytes arrived with (after a fetch)
+    content_sha256: str | None                  # the platform's X-Allus-Content-Sha256 for the SERVED ARTIFACT
+    def bytes(self) -> bytes                    # fetch (if needed) → the primary file bytes
+    def save(self, path: str) -> int            # write bytes() to path; returns bytes written
+    def pages(self) -> list[BinaryPage]         # the envelope's pages, in order ([] for a single-file one)
+    def metadata(self) -> dict[str, str | None] # the type's declared entries ({} when there are none)
+
+class BinaryPage:          # frozen dataclass
+    label: str | None      # front | back | additional
+    name: str | None       # the original filename
+    mime: str | None       # the server-derived media type
+    bytes: bytes           # the decoded page bytes
 ```
 
-On first `.bytes()`/`.save()` the handle GETs the slot-keyed file endpoint and
-classifies the response on its `Content-Type` (never by sniffing the body). Which of
-the two 200 shapes arrives depends on whether the person's source field is private —
-their choice, changeable at any time, not announced in advance:
+On the first `.bytes()`/`.pages()`/`.metadata()`/`.save()` the handle GETs the
+slot-keyed file endpoint once and classifies the response — the raw-bytes shape on its
+`Content-Type` (never by sniffing the body), the two JSON shapes on the body's
+`encrypted` member. Which of the **three 200 shapes** arrives depends on the person's
+own privacy setting and on the TYPE of the field they answered with — neither yours to
+choose, both changeable, and not announced in advance:
 
 * **encrypted** (private source) — `application/json`, `{"encrypted": true, "value": <wrapper>}`:
-  1. Decrypt the inner `{"_enc":1,…}` wrapper with the service key → a JSON file-envelope string (`{"full": "data:…", "thumb": …}` for photos, `{"file": "data:…", …}` for documents).
-  2. Base64-decode the primary data URI (`full` for photos, `file` for documents) → the file bytes.
-* **plaintext** (non-private source) — the file's own `Content-Type` and the body IS
-  the file: returned as-is, no decrypt, no service key needed.
+  decrypt the inner `{"_enc":1,…}` wrapper with the service key → the JSON ENVELOPE string.
+* **envelope** (non-private source whose type stores more than one file or declares
+  metadata entries — the ID-document subtypes and `legal_document`) —
+  `application/json`, `{"encrypted": false, "value": "<envelope>"}`: the same envelope
+  string in the clear. No decrypt, no service key needed.
+* **plaintext bytes** (every other non-private source) — the file's own `Content-Type`
+  and the body IS the file: returned as-is.
 
-Either shape is cached on the handle (repeated calls don't re-fetch) and both carry
-`X-Allus-Content-Sha256` → `content_sha256`, the sha256 of exactly the bytes
-`.bytes()` returns. There is no variant selection: one slot has one byte sequence.
+The envelope is `{"full": "data:…", "thumb": …}` for a photo, `{"file": "data:…", …}`
+for a single-file document, and `{"pages": [{"label":…, "file": "data:…", …}], …}` for
+a multi-page one, with every entry the type declares beside it.
+
+`.bytes()` answers the primary data URI (`full` for photos, `file` for documents).
+**A multi-page envelope has no single primary file, so `.bytes()`/`.save()` raise
+`DecryptError("multi-page envelope: use pages")`** — read `.pages()` instead.
+`.metadata()` is every string-keyed envelope member other than `pages`, `file`,
+`full`, `thumb`, `original_name`, `mime_type` and `size`, so a passport's
+`document_number`, `expiry_date`, `issuing_country` and `name` are all there;
+**it carries no ordering guarantee**, and a consumer that needs the declared order
+reads the envelope string itself.
+
+Whatever arrived is cached on the handle (repeated calls don't re-fetch) and all three
+carry `X-Allus-Content-Sha256` → `content_sha256`, the digest of the **served
+artifact**: the raw bytes on the bytes shape, the served `value` string on either JSON
+shape. There is no variant selection.
 
 An unanswered binary slot yields an empty handle; calling `.bytes()` on it raises
 `DecryptError`. A frozen answer whose 90-day retention has elapsed raises `ApiError`

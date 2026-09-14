@@ -36,10 +36,12 @@ How it is wired (the "everything else the SDK hides"):
   than a list of type names. A type the held registry does not carry triggers one
   bounded refetch.
 * **Binary** — a value's ``BinaryHandle.bytes()`` GETs the slot file endpoint and
-  returns the file bytes whichever of the endpoint's two 200 shapes arrives:
-  an ``{"encrypted":true,"value":<wrapper>}`` envelope runs the same service-key
-  decrypt, while a plaintext answer's body already IS the file. The shapes are told
-  apart on ``Content-Type`` in ``_binary_fetch``.
+  returns the file bytes whichever of the endpoint's three 200 shapes arrives:
+  an ``{"encrypted":true,"value":<wrapper>}`` body runs the same service-key
+  decrypt, an ``{"encrypted":false,"value":"<envelope>"}`` body is that envelope in
+  the clear, and a plaintext answer's body already IS the file. The bytes shape is
+  told apart on ``Content-Type`` in ``_binary_fetch``, the two JSON shapes on
+  ``encrypted``. ``pages()`` and ``metadata()`` expose the rest of an envelope.
 * **Changes feed** — ``process_changes`` delegates to the
   :class:`~allus_company_data.pump.Pump`, injecting a ``fetch_changes`` closure
   (``GET /changes?limit=``, returning the raw ciphertext events) and a
@@ -195,13 +197,15 @@ class Client:
     def _binary_fetch(self, value_url: str) -> BinaryFetchResult:
         """Fetch a company-facing binary file endpoint and classify its response.
 
-        The endpoint has TWO 200 shapes and which one arrives is not the
+        The endpoint has THREE 200 shapes and which one arrives is not the
         company's to predict: a person whose source field is PRIVATE yields
-        ``application/json`` ``{"encrypted":true,"value":<wrapper>}``, a person whose
-        field is not yields the file's own Content-Type and the bytes themselves. The
-        decision is made on ``Content-Type`` and never by sniffing the body — a PDF or
-        an image that happened to start with a brace would be indistinguishable from a
-        wrapper.
+        ``application/json`` ``{"encrypted":true,"value":<wrapper>}``; a NON-PRIVATE
+        source whose type stores more than one file or declares metadata entries
+        yields ``{"encrypted":false,"value":"<envelope>"}``; every other non-private
+        source yields the file's own Content-Type and the bytes themselves. The bytes
+        shape is told apart on ``Content-Type`` and never by sniffing the body — a PDF
+        or an image that happened to start with a brace would be indistinguishable
+        from a wrapper — and inside a JSON body it is ``encrypted`` that decides.
 
         A 410 ``company_data.file_expired`` (the answer's 90-day retention has elapsed)
         surfaces as an :class:`~allus_company_data.errors.ApiError` whose ``details``
@@ -227,10 +231,24 @@ class Client:
                 content_sha256=digest,
             )
 
-        # Parsed through the client's OWN parser, not a hard-coded json.loads: an
-        # XML-configured client speaks XML on every other endpoint and must not silently
-        # lose it on this one.
-        body = self._http.parse_body(resp, self._http.wants_xml)
+        # Parsed by what the RESPONSE says it is, never by the configured `format`: these four
+        # routes answer `application/json` on both structured arms whatever the client speaks, so a
+        # client configured for XML must not hand this body to its XML parser.
+        body = self._http.parse_body(resp, "xml" in lowered)
+        # `encrypted: false` with a string `value` is the PLAINTEXT ENVELOPE arm; every other
+        # JSON body is the wrapper arm, which is what the bare-wrapper routes (a company's own
+        # contract copy, its run slot file) answer with.
+        if (
+            isinstance(body, dict)
+            and body.get("encrypted") is False
+            and isinstance(body.get("value"), str)
+        ):
+            return BinaryFetchResult(
+                encrypted=False,
+                envelope=body["value"],
+                content_type=content_type,
+                content_sha256=digest,
+            )
         wrapper = body["value"] if isinstance(body, dict) and "value" in body else body
         return BinaryFetchResult(
             encrypted=True,

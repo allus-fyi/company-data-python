@@ -514,11 +514,27 @@ def _stringify(v: Any) -> Any:
     if isinstance(v, (datetime, date)):
         return v.isoformat()
     if isinstance(v, BinaryHandle):
-        try:
-            return f"[binary {len(v.bytes())} bytes]"
-        except Exception:  # noqa: BLE001
-            return "[binary value]"
+        return _binary_descriptor(v)
     return str(v)
+
+
+def _binary_descriptor(handle: BinaryHandle) -> str:
+    """The one-line descriptor every SDK example prints for a fetched binary.
+
+    The PAGE COUNT for a multi-page envelope (whose ``bytes()`` has no single answer), the byte
+    length otherwise, and the declared metadata keys whenever the envelope carries any — so a
+    ``legal_document`` shows its byte length AND its ``document_number``/``expiry_date``. Keys are
+    sorted, because the metadata map carries no ordering guarantee.
+    """
+    try:
+        pages = handle.pages()
+        head = f"binary {len(pages)} pages" if pages else f"binary {len(handle.bytes())} bytes"
+        meta = handle.metadata()
+        if meta:
+            head += "; meta: " + ", ".join(sorted(meta))
+        return f"[{head}]"
+    except Exception:  # noqa: BLE001
+        return "[binary value]"
 
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
