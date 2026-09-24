@@ -42,7 +42,7 @@ def test_vector_case(case):
 
 def test_vector_has_all_cases():
     # Guard against an accidental truncation of the committed vector.
-    assert len(_cases()) == 177
+    assert len(_cases()) == 179
 
 
 @pytest.mark.parametrize("case", _vector()["resolve_cases"], ids=lambda c: c["name"])

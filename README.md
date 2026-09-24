@@ -432,7 +432,9 @@ PRIMITIVE, so a type added as a row types itself with no SDK release.
 
 For the seeded types that means, unchanged: `email`/`phone`/`url`/`text` → `str` (`phone` is a
 single E.164-style string, `+` and digits); `country`/`nationality` → `str`, an ISO 3166-1 alpha-2
-code (e.g. `"US"`, `"NL"`), not a display name; `address`/`bank`/`creditcard` → `dict`;
+code (e.g. `"US"`, `"NL"`), not a display name;
+`personal_number`/`place_of_birth` → `str`, and a verified place of birth is `<city>, <alpha-2>`
+(e.g. `"Amsterdam, NL"`) — a country CODE, not a name; `address`/`bank`/`creditcard` → `dict`;
 `date`/`date_of_birth` → `datetime.date`; `photo`, `document`, `legal_document` and the ID-document
 subtypes `passport`, `photo_id`, `drivers_license` → a lazy `BinaryHandle`.
 
