@@ -803,9 +803,9 @@ class FlowRun:
     reference_date: Optional[str] = None  # immutable run "today" (raw YYYY-MM-DD string)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    # Every party the run binds, the owning company included (flows.html §5a/§9 item 12).
-    # `connection_id` above names only the PRIMARY counterparty, so a multi-actor run's other
-    # counterparties are reachable only here.
+    # Every bound party, including the owning company.
+    # The top-level connection id is the customer caller's own connection on customer reads;
+    # service-owner reads carry the primary counterparty's connection.
     participants: List["FlowRunParticipant"] = field(default_factory=list)
     raw: dict = field(default_factory=dict, repr=False)
     # The slugs whose answers came from a private source (a party's private field, a plugin
