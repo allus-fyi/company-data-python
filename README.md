@@ -1044,6 +1044,20 @@ identity()                                                    -> dict           
 * `submit_flow_answers` / `generate_flow_document` / `process_flow_run` fill the company's current node, advance the run (encrypting one answer copy per bound party), and — at a document-mode leaf — generate the contract. See the method docstrings for the full per-party encryption details.
 * `identity()` (#491 gap 3) — this client's own `{"company_user_id": ..., "service_id": ...}` from `GET /api/company-data/whoami`. `trigger_flow_run`'s company-side binding must use `company_user_id` (the person party's user_id comes from the connection) — without this call it was unconstructible through the SDK.
 
+**The party that answers a run's last step generates the contract — the customer role included.**
+When your company is a CUSTOMER of another company's service and its answer completes a document-mode
+leaf, the run parks at `generating` until you generate:
+
+```python
+customer.generate_flow_document(connection_id, run)   -> dict   # POST /api/company-connections/{connection_id}/flow-runs/{run_id}/generate
+```
+
+Pass the run as re-read after your leaf submit. The answer map comes from your OWN copy of the run's
+answers, decrypted with the account key — every party's answers are sealed to every bound party, so
+that copy holds the whole run and no service key is involved. Returns `{document_id, documents,
+status}`; a repeat answers the same document set. Raises `ConfigError` when the run's current step is
+not bound to your company.
+
 ```python
 me = client.identity()
 run = client.trigger_flow_run(

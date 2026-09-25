@@ -53,13 +53,11 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import secrets
 import threading
 import time
 from typing import Any, Callable, Iterator, List, Optional
 
 import requests
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .config import Config
 from .crypto import decrypt as crypto_decrypt
@@ -70,6 +68,7 @@ from .crypto import (
     encrypt_for_public_key,
     load_private_key,
     load_public_key,
+    one_time_key_bundle,
 )
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError, ValidationError
 from .field_types import FieldTypeRegistry
@@ -1269,25 +1268,11 @@ class Client:
     def generate_flow_document(self, run: FlowRun) -> dict:
         """Document-mode company leaf: one-time-key value gather → POST /generate.
 
-        Builds a random 32-byte AES-256-GCM key, encrypts ``JSON({slug: plaintext})``
-        of the company's decrypted answers, packs ``iv(12)||ciphertext||tag(16)``,
-        and POSTs ``{otk: base64(key), values: base64(blob)}``. Returns the API
-        response ``{document_id, status: "awaiting_signature"}`` (idempotent — a
-        second call with a ``document_id`` already set echoes it back).
+        Seals the company's decrypted answers with :func:`one_time_key_bundle` and POSTs
+        ``{otk, values}``. Returns the API response ``{document_id, documents, status}``
+        (idempotent — a repeat answers the same document set).
         """
-        answers = self._decrypt_run_answers(run)
-        payload = json.dumps(
-            {k: (v if isinstance(v, str) else json.dumps(v)) for k, v in answers.items()}
-        ).encode("utf-8")
-        otk = secrets.token_bytes(32)
-        iv = secrets.token_bytes(12)
-        # AESGCM appends the 16-byte tag; the server reads iv(12)||ct||tag(16).
-        ct_with_tag = AESGCM(otk).encrypt(iv, payload, None)
-        blob = iv + ct_with_tag
-        body = {
-            "otk": base64.b64encode(otk).decode("ascii"),
-            "values": base64.b64encode(blob).decode("ascii"),
-        }
+        body = one_time_key_bundle(self._decrypt_run_answers(run))
         return self._http.post(f"{_FLOW_RUNS}/{run.id}/generate", json_body=body)
 
     def process_flow_run(

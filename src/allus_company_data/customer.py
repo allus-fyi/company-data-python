@@ -3,9 +3,10 @@
 ``CustomerClient`` is what a *connecting company* uses to consume and answer
 another company's service over its ``acct_*`` credentials: list its company↔company
 connections, provide/edit typed answers to consent requests, read (and decrypt)
-issued documents, run contract flows, drain the account change feed, and verify
-account-level webhooks. It reuses the same crash-safe pump, webhook helpers, and
-hybrid-crypto core as the service :class:`~allus_company_data.client.Client`.
+issued documents, run contract flows — generating the contract of a run whose last
+step it answered — drain the account change feed, and verify account-level webhooks.
+It reuses the same crash-safe pump, webhook helpers, and hybrid-crypto core as the
+service :class:`~allus_company_data.client.Client`.
 
 **No sign/accept methods (spec D6).** Signing/accepting a contract is a deliberate
 human step-up that stays portal-only; a machine ``acct_*`` token is rejected by the
@@ -30,7 +31,7 @@ from typing import Any, Callable, List, Optional
 
 from . import webhooks as _webhooks
 from .config import Config
-from .crypto import decrypt as crypto_decrypt, encrypt_for_public_key, load_public_key
+from .crypto import decrypt as crypto_decrypt, encrypt_for_public_key, load_public_key, one_time_key_bundle
 from .customer_models import CustomerConnection
 from .errors import ConfigError, ValidationError
 from .field_types import FieldTypeRegistry
@@ -309,6 +310,34 @@ class CustomerClient:
     def decline_flow_run(self, connection_id: str, run_id: str) -> Any:
         """Decline a flow run (``POST .../flow-runs/{runId}/decline``)."""
         return self._http.post(f"{_CONN}/{connection_id}/flow-runs/{run_id}/decline")
+
+    def generate_flow_document(self, connection_id: str, run: FlowRun) -> Any:
+        """Generate the contract of a document-mode run whose LEAF this company answered.
+
+        ``POST /api/company-connections/{connection_id}/flow-runs/{run_id}/generate``. The party
+        that answers a run's last step generates. Submitting the leaf's answers leaves the run
+        ``generating``; pass the run as re-read then. The whole answer map comes from this
+        company's OWN copy of the answers, decrypted with the account key — every party's answers
+        are sealed to every bound party, so that copy holds the whole run and no service key is
+        involved — and is sealed with :func:`~allus_company_data.crypto.one_time_key_bundle`.
+        Returns the API response ``{document_id, documents, status}`` (idempotent — a repeat
+        answers the same document set).
+
+        Raises :class:`ConfigError` when the run's current step is not bound to this company —
+        the participant the run lists on ``connection_id``.
+        """
+        own_uid = next(
+            (p.person_user_id for p in run.participants if p.connection_id == connection_id), None
+        )
+        # The step is checked before anything is decrypted: another party's copies do not open
+        # with the account key.
+        step = self._flow_party_view(run, with_answers=False)
+        if own_uid is None or not any((run.bindings or {}).get(k) == own_uid for k in step.own_party_keys):
+            raise ConfigError(f"run {run.id} is not at a step this company answered")
+        return self._http.post(
+            f"{_CONN}/{connection_id}/flow-runs/{run.id}/generate",
+            json_body=one_time_key_bundle(self._flow_party_view(run).stored),
+        )
 
     def check_flow_value(self, run: FlowRun, slug: str, value: Any, draft: Optional[dict] = None) -> None:
         """Refuse a value outside its flow field's ``min``/``max`` before :meth:`encrypt_flow_answer` seals it.

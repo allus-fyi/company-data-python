@@ -601,6 +601,29 @@ class BinaryHandle:
         return len(data)
 
 
+def one_time_key_bundle(answers: dict) -> dict:
+    """The one-time-key bundle a flow run's ``/generate`` takes: the WHOLE answer map, sealed
+    under a key used once and never stored.
+
+    ``answers`` is ``{slug: plaintext}`` (a non-string value is JSON-encoded). A random 32-byte
+    AES-256-GCM key encrypts ``JSON(answers)``; the result is packed ``iv(12)||ciphertext||tag(16)``
+    and both halves are base64-encoded → ``{"otk": …, "values": …}``. The server evaluates every
+    leaf-PDF condition, constant and ``{{tag}}`` over this map, so a slug missing from it prints
+    blank on the contract.
+    """
+    payload = json.dumps(
+        {k: (v if isinstance(v, str) else json.dumps(v)) for k, v in answers.items()}
+    ).encode("utf-8")
+    otk = secrets.token_bytes(32)
+    iv = secrets.token_bytes(GCM_IV_LEN)
+    # AESGCM appends the 16-byte tag; the server reads iv(12)||ct||tag(16).
+    blob = iv + AESGCM(otk).encrypt(iv, payload, None)
+    return {
+        "otk": base64.b64encode(otk).decode("ascii"),
+        "values": base64.b64encode(blob).decode("ascii"),
+    }
+
+
 def compute_plain_sha256(data: bytes) -> str:
     """SHA-256 of raw PDF bytes, lowercase hex — the ``plain_sha256`` a signable file
     document's create call and every sign/accept act must agree on. Exposed so a
