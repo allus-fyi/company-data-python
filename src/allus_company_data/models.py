@@ -5,7 +5,7 @@ that turn a *hardened* API JSON object (slug-keyed ``values``; NO person source
 field) into typed Python objects, decrypting ciphertext via the
 injected crypto core.
 
-    RequestField { slug, label, type, one_time, mandatory, verified, verified_max_age_days }
+    RequestField { slug, label, type, one_time, mandatory, verified, verified_max_age_days, plugin }
     Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
     Value        { value, live, updated_at, verified, verified_at, verified_expires_at,
                    verified_method, verified_provider, verification_id }
@@ -25,6 +25,7 @@ names:
 * primitive ``multilist`` → ``list``
 * everything else → the plaintext ``str``, whose grammar the registry's
   :meth:`~allus_company_data.field_types.FieldTypeRegistry.validate` states
+* the reserved type key ``plugin`` is typed first, before the registry: a :class:`PluginValue`
 
 Every model carries ``.raw`` — the underlying (hardened) API dict — for debugging
 or an edge case the SDK didn't model. It still never contains the person's source
@@ -43,6 +44,7 @@ from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from .crypto import BinaryFetchResult, BinaryHandle, DecryptError, hash_matches
+from .errors import ValidationError
 from .field_types import FieldTypeRegistry
 
 # A decrypt callable: takes the ciphertext wrapper (dict or JSON string) and
@@ -159,6 +161,10 @@ class RequestField:
     # apply your own policy from each Value's ``verified_at``.
     verified_max_age_days: Optional[int] = None
     raw: dict = field(default_factory=dict, repr=False)
+    # The plugin behind a plugin row (``type == "plugin"``): its name, field type and the field
+    # type's frozen description (blocks, inputs, outputs). None on every other row, and on an
+    # API that does not send it.
+    plugin: Optional["RequestFieldPlugin"] = None
 
     @classmethod
     def from_api(cls, obj: dict) -> "RequestField":
@@ -175,6 +181,7 @@ class RequestField:
             verified=bool(_coerce_bool(obj.get("verified"))),
             verified_max_age_days=_coerce_int(obj.get("verified_max_age_days")),
             raw=obj,
+            plugin=RequestFieldPlugin.from_api(obj.get("plugin")),
         )
 
     @classmethod
@@ -182,6 +189,97 @@ class RequestField:
         """Parse the ``/request-fields`` response → a list of definitions."""
         items = body.get("request_fields", []) if isinstance(body, dict) else (body or [])
         return [cls.from_api(o) for o in items]
+
+
+@dataclass
+class RequestFieldPlugin:
+    """The plugin a plugin request row or flow row asks through."""
+
+    plugin_name: Optional[str]
+    field_type: Optional[str]
+    # The field type's frozen description: {plugin_name, host, label, blocks, inputs, outputs}.
+    snapshot: Optional[dict] = None
+    raw: dict = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_api(cls, value: Any) -> Optional["RequestFieldPlugin"]:
+        """Parse-permissive: anything but an object is "no plugin"."""
+        if not isinstance(value, dict):
+            return None
+        snapshot = value.get("snapshot")
+        return cls(
+            plugin_name=value.get("plugin_name"),
+            field_type=value.get("field_type"),
+            snapshot=snapshot if isinstance(snapshot, dict) else None,
+            raw=value,
+        )
+
+
+# ── plugin values ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class PluginValue:
+    """A plugin answer — the value of a row whose type key is ``plugin``, and of a plugin claim.
+
+    The answer describes itself: the plugin's name, the field type, the blocks in declared
+    order (``{key, kind, label, id, value}`` — a ``search_select`` pick carries its id and its
+    option label as ``value``, a typed block its typed value) and the outputs
+    (``{key, type, label, value}``, typed as the plugin declared them), so reading it never
+    needs the plugin. It is what the answering client submitted — sealed but not signed; a
+    company that must rely on an output checks it with the plugin itself.
+    """
+
+    plugin: Optional[str]
+    type: Optional[str]
+    blocks: List[dict]
+    outputs: List[dict]
+    raw: dict = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def parse(cls, plaintext: str) -> "PluginValue":
+        """Parse a plugin answer's plaintext.
+
+        Raises :class:`ValidationError` when the plaintext is not a JSON object with an
+        ``outputs`` array.
+        """
+        try:
+            obj = json.loads(plaintext)
+        except (TypeError, ValueError):
+            obj = None
+        if not isinstance(obj, dict) or not isinstance(obj.get("outputs"), list):
+            raise ValidationError(None, "plugin")
+
+        def text(v: Any) -> Optional[str]:
+            return None if v is None else str(v)
+
+        blocks = obj.get("blocks") if isinstance(obj.get("blocks"), list) else []
+        return cls(
+            plugin=text(obj.get("plugin")),
+            type=text(obj.get("type")),
+            blocks=[
+                {
+                    "key": text(b.get("key")),
+                    "kind": text(b.get("kind")),
+                    "label": text(b.get("label")),
+                    "id": text(b.get("id")),
+                    "value": b.get("value"),
+                }
+                for b in blocks
+                if isinstance(b, dict)
+            ],
+            outputs=[
+                {
+                    "key": text(o.get("key")),
+                    "type": text(o.get("type")),
+                    "label": text(o.get("label")),
+                    "value": o.get("value"),
+                }
+                for o in obj["outputs"]
+                if isinstance(o, dict)
+            ],
+            raw=obj,
+        )
 
 
 # ── values ───────────────────────────────────────────────────────────────────
@@ -290,6 +388,15 @@ def _typed_value(
     that triggered that heal — must be typed by the rows the heal brought in.
     """
     ftype = (field_type or "").lower()
+
+    # The type key ``plugin`` is reserved and never a registry row: a plugin answer is a
+    # self-describing JSON object, typed here before the registry is consulted.
+    if ftype == "plugin":
+        ciphertext = obj.get("value")
+        if ciphertext is None:
+            return None
+        return PluginValue.parse(decrypt_value(ciphertext))
+
     registry = field_types()
     definition = registry.resolve(ftype)
 
@@ -701,6 +808,11 @@ class FlowRun:
     # counterparties are reachable only here.
     participants: List["FlowRunParticipant"] = field(default_factory=list)
     raw: dict = field(default_factory=dict, repr=False)
+    # The slugs whose answers came from a private source (a party's private field, a plugin
+    # called with a private input, a default filled from one). Metadata, never a value. None
+    # when the API did not send the list — unknown, which the SDK treats as private for every
+    # other party.
+    private_slugs: Optional[List[str]] = None
 
     @property
     def company_party_key(self) -> Optional[str]:
@@ -749,6 +861,11 @@ class FlowRun:
             updated_at=_parse_iso_dt(obj.get("updated_at")),
             participants=[FlowRunParticipant.from_api(p) for p in (obj.get("participants") or []) if isinstance(p, dict)],
             raw=obj,
+            private_slugs=(
+                [str(x) for x in obj["private_slugs"] if x is not None]
+                if isinstance(obj.get("private_slugs"), list)
+                else None
+            ),
         )
 
 
@@ -821,6 +938,8 @@ class LogEntry:
 
 __all__ = [
     "RequestField",
+    "RequestFieldPlugin",
+    "PluginValue",
     "Value",
     "Connection",
     "Change",

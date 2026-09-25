@@ -22,14 +22,19 @@ from .crypto import (
     compute_plain_sha256,
     decrypt,
     encrypt_for_public_key,
+    export_public_key_spki,
+    generate_reply_key_pair,
     load_private_key,
     load_public_key,
+    plugin_open_request,
+    plugin_seal_reply,
 )
 from .errors import (
     ApiError,
     AuthError,
     ConfigError,
     DecryptError,
+    PluginInputUnavailable,
     RateLimitError,
     ValidationError,
     WebhookError,
@@ -42,10 +47,24 @@ from .flow_condition import (
     eval_expr,
     evaluate,
     evaluate_flow_condition,
+    expand_plugin_answers,
+    plugin_answer_summary,
+    plugin_answer_view,
     resolved_constants,
 )
-from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField, Value
-from .oauth import Attestation, Claim, OAuthClient
+from .flow_plugins import PluginOptions, PluginOutputs, PluginPass, PluginPicksInvalid
+from .models import (
+    Change,
+    Connection,
+    Document,
+    FlowRun,
+    LogEntry,
+    PluginValue,
+    RequestField,
+    RequestFieldPlugin,
+    Value,
+)
+from .oauth import Attestation, Claim, OAuthClient, parse_plugin_value
 from .two_factor import TwoFactorChallenge, TwoFactorClient, TwoFactorResult
 from .pump import Pump
 from .webhooks import handle_webhook, parse_webhook, verify_webhook
@@ -69,6 +88,11 @@ __all__ = [
     "decrypt",
     "encrypt_for_public_key",
     "compute_plain_sha256",
+    # a plugin server's own sealing (the builder routine) + reply keys
+    "plugin_open_request",
+    "plugin_seal_reply",
+    "generate_reply_key_pair",
+    "export_public_key_spki",
     "BinaryHandle",
     # One page of a multi-page binary answer, as `BinaryHandle.pages()` returns it.
     "BinaryPage",
@@ -83,6 +107,7 @@ __all__ = [
     "WebhookError",
     "RateLimitError",
     "ValidationError",
+    "PluginInputUnavailable",
     # the field-type registry (value shape + value validation) + country helpers
     "FieldTypeRegistry",
     "is_valid_country_code",
@@ -97,16 +122,27 @@ __all__ = [
     "Document",
     "FlowRun",
     "LogEntry",
+    "PluginValue",
+    "RequestFieldPlugin",
+    # plugin fields on a flow step (the company party's calls through the forwarder)
+    "PluginPass",
+    "PluginOptions",
+    "PluginOutputs",
+    "PluginPicksInvalid",
     # "Sign in with allme" — RP-side OAuth
     "OAuthClient",
     "Attestation",
     "Claim",
+    "parse_plugin_value",
     # contract-flow condition evaluator + computed constants
     "evaluate",
     "eval_expr",
     "compute_constants",
     "evaluate_flow_condition",
     "resolved_constants",
+    "expand_plugin_answers",
+    "plugin_answer_summary",
+    "plugin_answer_view",
     # changes pump
     "FileBuffer",
     "Pump",

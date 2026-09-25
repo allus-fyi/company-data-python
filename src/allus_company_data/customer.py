@@ -35,6 +35,17 @@ from .customer_models import CustomerConnection
 from .errors import ConfigError, ValidationError
 from .field_types import FieldTypeRegistry
 from .http import HttpClient
+from .flow_plugins import (
+    FlowPartyView,
+    PluginOptions,
+    PluginPass,
+    call_plugin,
+    check_flow_bounds,
+    is_draft_private,
+    live_answer_map,
+    outputs_result,
+    prepare_plugin_call,
+)
 from .models import Change, Document, FlowRun
 from .pump import Pump
 
@@ -270,10 +281,27 @@ class CustomerClient:
     def submit_flow_answers(
         self, connection_id: str, run_id: str, body: dict
     ) -> Any:
-        """Submit this party's turn. ``body`` carries the already-encrypted per-party
-        ``answers``/``links``/``next_node``; use :meth:`encrypt_flow_answer` to build the
-        per-party copies with the correct keys.
+        """Submit this party's turn.
+
+        ``body`` carries the already-encrypted per-party ``answers``/``links``/``next_node``;
+        use :meth:`encrypt_flow_answer` to build the per-party copies with the correct keys and
+        :meth:`check_flow_value` first to apply a field's minimum and maximum.
+
+        Every answer whose field's default reads another party's private source is marked
+        ``source_private: True`` before it is sent (the run is read once for the rule), so every
+        later reader treats it as private.
         """
+        answers = body.get("answers") if isinstance(body, dict) else None
+        if isinstance(answers, list) and answers:
+            view = self._flow_party_view(self.flow_run(connection_id, run_id), with_answers=False)
+            slugs = {a["slug"]: True for a in answers if isinstance(a, dict) and isinstance(a.get("slug"), str)}
+            body = dict(body)
+            body["answers"] = [
+                {**a, "source_private": True}
+                if isinstance(a, dict) and isinstance(a.get("slug"), str) and is_draft_private(view, a["slug"], slugs)
+                else a
+                for a in answers
+            ]
         return self._http.post(
             f"{_CONN}/{connection_id}/flow-runs/{run_id}/answers", json_body=body
         )
@@ -281,6 +309,111 @@ class CustomerClient:
     def decline_flow_run(self, connection_id: str, run_id: str) -> Any:
         """Decline a flow run (``POST .../flow-runs/{runId}/decline``)."""
         return self._http.post(f"{_CONN}/{connection_id}/flow-runs/{run_id}/decline")
+
+    def check_flow_value(self, run: FlowRun, slug: str, value: Any, draft: Optional[dict] = None) -> None:
+        """Refuse a value outside its flow field's ``min``/``max`` before :meth:`encrypt_flow_answer` seals it.
+
+        The bounds are computed over the live answer map: this company's own copies of the
+        run's answers (decrypted with the account key), overlaid with ``draft`` — the current
+        step's other not-yet-submitted answers — and ``value`` for ``slug``, plugin answers
+        expanded, constants computed. A bound that computes to None is no bound. Raises
+        :class:`ValidationError` naming the bound, as the service ``Client`` does on submit.
+        """
+        live = live_answer_map(self._flow_party_view(run), {**(draft or {}), slug: value})
+        check_flow_bounds(run.definition, slug, value, live, run.reference_date)
+
+    def plugin_pass(self, connection_id: str, run_id: str) -> PluginPass:
+        """A pass for the plugin fields of the run's current step.
+
+        ``POST /api/company-connections/{connection_id}/flow-runs/{run_id}/plugin-pass``.
+        Issued only while the run awaits this company's party on that step.
+        """
+        return PluginPass.from_api(
+            self._http.post(f"{_CONN}/{connection_id}/flow-runs/{run_id}/plugin-pass", json_body={})
+        )
+
+    def plugin_options(
+        self,
+        connection_id: str,
+        run_id: str,
+        slug: str,
+        block: str,
+        query: str = "",
+        picks: Optional[dict] = None,
+        values: Optional[dict] = None,
+        draft: Optional[dict] = None,
+    ) -> PluginOptions:
+        """The options of one block of the current step's plugin field ``slug``.
+
+        Same contract as the service ``Client.plugin_options``, with a leading
+        ``connection_id``; the inputs are read from this company's own copies of the run's
+        answers overlaid with ``draft``.
+        """
+        run = self.flow_run(connection_id, run_id)
+        pass_ = self.plugin_pass(connection_id, run_id)
+        call = prepare_plugin_call(self._flow_party_view(run), pass_, slug, draft)
+        reply = call_plugin(
+            pass_,
+            lambda: self.plugin_pass(connection_id, run_id),
+            call,
+            {"op": "options", "block": block, "query": query, "picks": dict(picks or {}), "values": dict(values or {})},
+        )
+        return PluginOptions.from_reply(reply)
+
+    def plugin_outputs(
+        self,
+        connection_id: str,
+        run_id: str,
+        slug: str,
+        picks: Optional[dict] = None,
+        values: Optional[dict] = None,
+        draft: Optional[dict] = None,
+    ):
+        """The outputs of the current step's plugin field ``slug``, or :class:`PluginPicksInvalid`.
+
+        Same contract as the service ``Client.plugin_outputs``, with a leading
+        ``connection_id``.
+        """
+        run = self.flow_run(connection_id, run_id)
+        pass_ = self.plugin_pass(connection_id, run_id)
+        call = prepare_plugin_call(self._flow_party_view(run), pass_, slug, draft)
+        reply = call_plugin(
+            pass_,
+            lambda: self.plugin_pass(connection_id, run_id),
+            call,
+            {"op": "outputs", "picks": dict(picks or {}), "values": dict(values or {})},
+        )
+        return outputs_result(reply)
+
+    def _flow_party_view(self, run: FlowRun, with_answers: bool = True) -> FlowPartyView:
+        """This company's view of a run.
+
+        It is bound to the party that owns the current step — the only step it answers or
+        calls a plugin on — and reads its own answer copies with the account key
+        (``with_answers`` False reads none: the privacy rule needs only the graph and the lists).
+        """
+        own_uid = None
+        for n in run.definition.get("nodes") or []:
+            if isinstance(n, dict) and n.get("key") == run.current_node and n.get("party") is not None:
+                own_uid = (run.bindings or {}).get(str(n["party"]))
+        own_keys = set()
+        stored: dict = {}
+        if own_uid:
+            own_keys = {k for k, uid in (run.bindings or {}).items() if uid == own_uid}
+            for row in run.answers if with_answers else []:
+                if row.get("for_user_id") != own_uid:
+                    continue
+                slug, v = row.get("slug"), row.get("value")
+                if isinstance(slug, str) and v is not None:
+                    stored[slug] = self._decrypt_account(v)
+        return FlowPartyView(
+            definition=run.definition,
+            current_node=run.current_node,
+            reference_date=run.reference_date,
+            stored=stored,
+            private_slugs=run.private_slugs,
+            own_party_keys=own_keys,
+        )
 
     def encrypt_flow_answer(
         self, plaintext: str, party: dict, *, company_code: str, service_code: str

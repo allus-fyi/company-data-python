@@ -13,6 +13,7 @@ import pytest
 from allus_company_data.flow_condition import (
     compute_constants,
     evaluate_flow_condition,
+    expand_plugin_answers,
     resolved_constants,
 )
 
@@ -39,9 +40,17 @@ def _same(a, b):
     return a == b
 
 
+def _answers(case):
+    # A case may carry ``plugin_slugs``: its answers are expanded before the constants are
+    # computed, and ``expect`` may then name expanded answer keys as well as constants.
+    if "plugin_slugs" in case:
+        return expand_plugin_answers(case["answers"], case["plugin_slugs"])
+    return case["answers"]
+
+
 @pytest.mark.parametrize("case", _cases(), ids=lambda c: c["name"])
 def test_constants_vector_case(case):
-    out = compute_constants(case["constants"], case["answers"], case["reference_date"])
+    out = compute_constants(case["constants"], _answers(case), case["reference_date"])
     for key, expected in case["expect"].items():
         assert key in out, f"{case['name']}: constant {key!r} missing from result"
         assert _same(out[key], expected), (
@@ -51,11 +60,16 @@ def test_constants_vector_case(case):
 
 @pytest.mark.parametrize("case", _cases(), ids=lambda c: c["name"])
 def test_resolved_constants_is_constants_only(case):
-    # resolved_constants returns the computed constant values ONLY — exactly the
-    # vector's ``expect`` shape (declared constant keys, answers NOT folded in).
-    out = resolved_constants(case["constants"], case["answers"], case["reference_date"])
-    assert set(out.keys()) == set(case["expect"].keys())
+    # resolved_constants returns the computed constant values ONLY — one entry per declared
+    # constant key, answers NOT folded in; with the case's plugin slugs it expands first.
+    out = resolved_constants(
+        case["constants"], case["answers"], case["reference_date"], case.get("plugin_slugs")
+    )
+    const_keys = {c["key"] for c in case["constants"]}
+    assert set(out.keys()) == const_keys
     for key, expected in case["expect"].items():
+        if key not in const_keys:
+            continue
         assert _same(out[key], expected), (
             f"{case['name']}: {key} = {out[key]!r}, expected {expected!r}"
         )
@@ -68,5 +82,5 @@ def test_wrapper_preserves_condition_vector(case):
 
 
 def test_constants_vector_has_all_cases():
-    # Guard: the committed vector is the 51-case set (catch an accidental truncation).
-    assert len(_cases()) == 51
+    # Guard: the committed vector is the 62-case set (catch an accidental truncation).
+    assert len(_cases()) == 62

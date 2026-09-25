@@ -75,6 +75,19 @@ from .errors import ApiError, ConfigError, DecryptError, RateLimitError, Validat
 from .field_types import FieldTypeRegistry
 from .flow_condition import compute_constants as _compute_constants
 from .flow_condition import evaluate as evaluate_condition
+from .flow_condition import expand_plugin_answers as _expand_plugin_answers
+from .flow_plugins import (
+    FlowPartyView,
+    PluginOptions,
+    PluginPass,
+    call_plugin,
+    check_flow_bounds,
+    is_draft_private,
+    live_answer_map,
+    outputs_result,
+    plugin_slugs_of,
+    prepare_plugin_call,
+)
 from .http import HttpClient
 from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField
 from .pump import Pump
@@ -1095,12 +1108,22 @@ class Client:
         ``awaiting_<next party>`` / ``generating`` / ``completed``). A document-mode
         leaf leaves the run ``generating`` — call :meth:`generate_flow_document`
         (or use :meth:`process_flow_run`, which chains it).
+
+        A value below its field's ``min`` or above its ``max`` — each computed over the
+        run's answers, this fill and the flow's constants — is refused with a
+        :class:`ValidationError` naming the bound before anything is encrypted. A value
+        whose field's default reads another party's private source is submitted marked
+        ``source_private``.
         """
         party_pubkeys = dict(party_pubkeys or {})
         answers_so_far = self._decrypt_run_answers(run)
         full = dict(answers_so_far)
         full.update(fill)
         svc_pub = self._service_public_key()
+        # Bounds read the same live answer map the plugin calls read: stored answers, this
+        # fill as the current step's draft, plugin answers expanded, constants computed.
+        view = self._flow_party_view(run)
+        live = live_answer_map(view, fill)
 
         answers_out = []
         for slug, val in fill.items():
@@ -1127,6 +1150,7 @@ class Client:
                 options = _flow_field_options(element)
                 if not self.field_types().is_field_value_valid(ftype, plain, options):
                     raise ValidationError(slug, ftype)
+            check_flow_bounds(run.definition, slug, val, live, run.reference_date)
             values = []
             for uid in run.bindings.values():
                 if uid == run.service_user_id:
@@ -1134,7 +1158,12 @@ class Client:
                 else:
                     key = self._flow_person_public_key(run, uid, party_pubkeys)
                 values.append({"for_user_id": uid, "value": encrypt_for_public_key(plain, key)})
-            answers_out.append({"slug": slug, "values": values})
+            answer = {"slug": slug, "values": values}
+            # A value whose field's default reads another party's private source is private
+            # too, so every later reader treats it as one.
+            if is_draft_private(view, slug, fill):
+                answer["source_private"] = True
+            answers_out.append(answer)
 
         nxt = _compute_next(run.definition, run.current_node, full, run.reference_date)
         body: dict = {"answers": answers_out}
@@ -1145,6 +1174,97 @@ class Client:
             body["next_party"] = _party_of(run.definition, nxt["next_node"])
         res = self._http.post(f"{_FLOW_RUNS}/{run.id}/answers", json_body=body)
         return FlowRun.from_api(res)
+
+    # ── plugin fields on the company's turn ───────────────────────────────────
+
+    def _flow_party_view(self, run: FlowRun) -> FlowPartyView:
+        """This party's view of a run: its readable answers, the privacy list, its own party keys."""
+        return FlowPartyView(
+            definition=run.definition,
+            current_node=run.current_node,
+            reference_date=run.reference_date,
+            stored=self._decrypt_run_answers(run),
+            private_slugs=run.private_slugs,
+            own_party_keys={k for k, uid in (run.bindings or {}).items() if uid == run.service_user_id},
+        )
+
+    def check_flow_value(self, run: FlowRun, slug: str, value: Any, draft: Optional[dict] = None) -> None:
+        """Refuse a value outside its flow field's ``min``/``max`` without submitting anything.
+
+        The bounds are computed over the live answer map: the run's answers, overlaid with
+        ``draft`` — the current step's other not-yet-submitted answers — and ``value`` for
+        ``slug``, plugin answers expanded, constants computed. A bound that computes to None is
+        no bound. :meth:`submit_flow_answers` applies the same check to every value it submits.
+        Raises :class:`ValidationError` naming the bound (``bound``, ``bound_value``).
+        """
+        live = live_answer_map(self._flow_party_view(run), {**(draft or {}), slug: value})
+        check_flow_bounds(run.definition, slug, value, live, run.reference_date)
+
+    def plugin_pass(self, run_id: str) -> PluginPass:
+        """A pass for the plugin fields of the run's current step.
+
+        ``POST /api/company-data/flow-runs/{run_id}/plugin-pass``. Issued only while the run
+        awaits the company's party on that step; it lives ten minutes.
+        :meth:`plugin_options` and :meth:`plugin_outputs` fetch one themselves.
+        """
+        return PluginPass.from_api(self._http.post(f"{_FLOW_RUNS}/{run_id}/plugin-pass", json_body={}))
+
+    def plugin_options(
+        self,
+        run_id: str,
+        slug: str,
+        block: str,
+        query: str = "",
+        picks: Optional[dict] = None,
+        values: Optional[dict] = None,
+        draft: Optional[dict] = None,
+    ) -> PluginOptions:
+        """Ask the plugin behind the current step's plugin field ``slug`` for one block's options.
+
+        ``query`` is the search text (``""`` lists everything), ``picks`` the ids picked so far
+        by block key, ``values`` the typed block values so far, and ``draft`` the current
+        step's not-yet-submitted answers (slug → plaintext) the plugin's inputs may read.
+        Inputs come from the run's answers overlaid with ``draft``, plugin answers expanded,
+        constants computed; another party's private value is never sent
+        (:class:`PluginInputUnavailable`). The call goes to the forwarder over a plain
+        transport, sealed to the plugin's key, with a fresh reply key.
+        """
+        run = self.flow_run(run_id)
+        pass_ = self.plugin_pass(run_id)
+        call = prepare_plugin_call(self._flow_party_view(run), pass_, slug, draft)
+        reply = call_plugin(
+            pass_,
+            lambda: self.plugin_pass(run_id),
+            call,
+            {"op": "options", "block": block, "query": query, "picks": dict(picks or {}), "values": dict(values or {})},
+        )
+        return PluginOptions.from_reply(reply)
+
+    def plugin_outputs(
+        self,
+        run_id: str,
+        slug: str,
+        picks: Optional[dict] = None,
+        values: Optional[dict] = None,
+        draft: Optional[dict] = None,
+    ):
+        """Ask the plugin behind plugin field ``slug`` for its outputs for ``picks`` and ``values``.
+
+        Returns :class:`PluginOutputs`, or :class:`PluginPicksInvalid` when the picks no
+        longer fit the inputs or each other (clear them and pick again). Same inputs,
+        ``draft`` and privacy rule as :meth:`plugin_options`. A caller that changes an input
+        calls this again before it submits.
+        """
+        run = self.flow_run(run_id)
+        pass_ = self.plugin_pass(run_id)
+        call = prepare_plugin_call(self._flow_party_view(run), pass_, slug, draft)
+        reply = call_plugin(
+            pass_,
+            lambda: self.plugin_pass(run_id),
+            call,
+            {"op": "outputs", "picks": dict(picks or {}), "values": dict(values or {})},
+        )
+        return outputs_result(reply)
 
     def generate_flow_document(self, run: FlowRun) -> dict:
         """Document-mode company leaf: one-time-key value gather → POST /generate.
@@ -1218,8 +1338,8 @@ def _node_by_key(definition: dict, key: Optional[str]) -> Optional[dict]:
 def _compute_next(definition: dict, from_key: Optional[str], answers: dict, reference_date: Any) -> dict:
     """The next node after ``from_key``: ordered outgoing edges, first match wins.
 
-    Conditions use the answers plus computed constants at the run reference date.
-    Returns a leaf when no outgoing edge matches.
+    Conditions use the answers — plugin answers expanded — plus computed constants at the
+    run reference date. Returns a leaf when no outgoing edge matches.
     """
     edges = sorted(
         (e for e in definition.get("edges", []) if isinstance(e, dict) and e.get("from") == from_key),
@@ -1227,7 +1347,11 @@ def _compute_next(definition: dict, from_key: Optional[str], answers: dict, refe
     )
     if not edges:
         return {"leaf": True}
-    materialized = _compute_constants(definition.get("constants"), answers, reference_date)
+    materialized = _compute_constants(
+        definition.get("constants"),
+        _expand_plugin_answers(answers, plugin_slugs_of(definition)),
+        reference_date,
+    )
     for e in edges:
         if evaluate_condition(e.get("condition"), materialized):
             return {"next_node": e["to"]}

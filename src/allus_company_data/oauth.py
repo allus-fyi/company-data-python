@@ -27,7 +27,7 @@ import requests
 from .config import Config
 from .crypto import decrypt, hash_matches, load_private_key
 from .errors import ApiError, AuthError, ConfigError
-from .models import expiry_passed
+from .models import PluginValue, expiry_passed
 
 # The hosted consent surface. The native apps claim this https link (universal/app
 # link); the web app is the no-app fallback. Overridable for non-prod hosts.
@@ -115,6 +115,22 @@ class Attestation:
     verified_provider: Optional[str] = None
     #: The id to quote back to allme in a dispute. Same all-or-none set.
     verification_id: Optional[str] = None
+
+
+def parse_plugin_value(value: str) -> PluginValue:
+    """Read a plugin claim's value.
+
+    An app that declares a plugin claim receives its answer in ``values[name]`` as a
+    self-describing JSON string — the plugin's name, the field type, the blocks (labels,
+    picked ids and option labels, typed values) and the outputs. A plugin answer is always
+    one-time: it is asked at every sign-in. It is what the person's client submitted —
+    sealed to the app key but not signed; an app that must rely on an output checks it with
+    the plugin itself.
+
+    Raises :class:`ValidationError` when the value is not a JSON object with an ``outputs``
+    array.
+    """
+    return PluginValue.parse(value)
 
 
 class OAuthClient:

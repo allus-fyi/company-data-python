@@ -16,6 +16,11 @@
 |                          | couldn't be unwrapped.                           |
 | RateLimitError(          | A 429 from a rate-limited endpoint (subclass of  |
 |   retry_after)           | ApiError); carries ``Retry-After``.              |
+| ValidationError          | A value failed its field type, or a flow field's |
+|                          | min/max (then ``bound``/``bound_value``).        |
+| PluginInputUnavailable   | A required plugin input is unwired, unanswered,  |
+|                          | another party's private value, or not            |
+|                          | convertible.                                     |
 +--------------------------+--------------------------------------------------+
 
 ``DecryptError`` is defined in :mod:`allus_company_data.crypto` (it is raised by
@@ -25,7 +30,7 @@ from one module.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 # DecryptError lives with the decryption core; re-export it so callers can pull
 # the full taxonomy from a single place.
@@ -91,13 +96,47 @@ class ValidationError(Exception):
 
     Carries the offending field ``slug`` and its ``field_type`` so the caller can
     point at the bad answer without shipping malformed ciphertext.
+
+    ``bound`` / ``bound_value`` are set when a flow field's minimum or maximum refused the
+    value: which bound (``"min"`` | ``"max"``) and the bound's value as the field's expression
+    computed it. Both are None on a type failure.
     """
 
-    def __init__(self, slug: Optional[str], field_type: Optional[str]) -> None:
+    def __init__(
+        self,
+        slug: Optional[str],
+        field_type: Optional[str],
+        bound: Optional[str] = None,
+        bound_value: Any = None,
+    ) -> None:
         self.slug = slug
         self.field_type = field_type
+        self.bound = bound
+        self.bound_value = bound_value if bound is not None else None
         target = slug if slug is not None else "value"
-        super().__init__(f"invalid {field_type} value for '{target}'")
+        if bound is None:
+            super().__init__(f"invalid {field_type} value for '{target}'")
+        else:
+            side = "below its minimum" if bound == "min" else "above its maximum"
+            super().__init__(f"value for '{target}' is {side} {bound_value}")
+
+
+class PluginInputUnavailable(Exception):
+    """A plugin call could not be made because a REQUIRED input is unavailable.
+
+    ``input`` is the plugin's input key, ``source`` the flow key it is wired to, and
+    ``reason`` why it is unavailable: ``unwired`` (no source), ``unanswered`` (the source has
+    no value yet), ``other_party_private`` (the source is another party's private value —
+    never sent to a plugin) or ``not_convertible`` (the value does not convert to the input's
+    declared type). An OPTIONAL input that is unavailable is left out of the call instead.
+    """
+
+    def __init__(self, input: str, source: Optional[str], reason: str) -> None:
+        self.input = input
+        self.source = source
+        self.reason = reason
+        detail = f"{reason}: {source}" if source else reason
+        super().__init__(f"plugin input '{input}' is unavailable ({detail})")
 
 
 class RateLimitError(ApiError):

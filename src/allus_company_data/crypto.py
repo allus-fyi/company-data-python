@@ -30,13 +30,15 @@ import os
 import secrets
 import tempfile
 from dataclasses import dataclass
-from typing import Union
+from typing import Optional, Union
 
 from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
     load_der_public_key,
     load_pem_private_key,
 )
@@ -50,19 +52,21 @@ class DecryptError(Exception):
 
 
 def load_private_key(
-    encrypted_pem_bytes: bytes, passphrase: str
+    encrypted_pem_bytes: bytes, passphrase: Optional[str]
 ) -> rsa.RSAPrivateKey:
-    """Load an OpenSSL-encrypted PKCS#8 PEM into an in-memory RSA private key.
+    """Load a PKCS#8 PEM into an in-memory RSA private key.
 
-    The PEM is PBES2 (PBKDF2-HMAC-SHA256 + AES-256-CBC). ``cryptography``'s
-    OpenSSL backend handles the SHA-256 PRF; the key is never written back to
-    disk in plaintext.
+    The platform's key downloads are OpenSSL-encrypted PEMs (PBES2 = PBKDF2-HMAC-SHA256 +
+    AES-256-CBC); ``cryptography``'s OpenSSL backend handles the SHA-256 PRF. An UNENCRYPTED
+    PKCS#8 PEM loads too — a plugin server's own key, for :func:`plugin_open_request` — with
+    the passphrase ``None`` or empty. The key is never written back to disk in plaintext.
 
-    Config-only key handling: this is the single place a passphrase is used,
-    and it is driven by ``Config.key_passphrase`` — never passed in by
-    application code.
+    Config-only key handling: the client roles use this only with the configured passphrase
+    — never one passed in by application code.
     """
-    if isinstance(passphrase, str):
+    if passphrase is None or passphrase == "":
+        pw = None
+    elif isinstance(passphrase, str):
         pw = passphrase.encode("utf-8")
     else:  # pragma: no cover - defensive
         pw = passphrase
@@ -621,3 +625,73 @@ def hash_matches(salt: str, expected_hash: str, plaintext: str) -> bool:
 def hmac_compare(a: str, b: str) -> bool:
     import hmac as _hmac
     return _hmac.compare_digest(a, b)
+
+
+# ── plugin sealing ───────────────────────────────────────────────────────────
+
+
+def generate_reply_key_pair() -> "tuple[rsa.RSAPrivateKey, str]":
+    """A fresh RSA-2048 reply key pair → ``(private_key, public_key_spki_b64)``.
+
+    A plugin seals its reply to the public half (the request's ``reply_key``); only the
+    caller holding the private half can open it.
+    """
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key, export_public_key_spki(private_key.public_key())
+
+
+def export_public_key_spki(public_key: rsa.RSAPublicKey) -> str:
+    """A public key as base64 SPKI (DER) — the form every platform key travels in."""
+    der = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    return base64.b64encode(der).decode("ascii")
+
+
+def plugin_open_request(
+    body: Union[str, bytes, dict], private_key_pem: Union[str, bytes], passphrase: Optional[str]
+) -> dict:
+    """For a PLUGIN'S OWN SERVER: open the body of a ``POST {base_url}/call`` → the request.
+
+    ``body`` is the call's JSON body ``{"request": "<wrapper string>"}`` (raw or parsed);
+    ``private_key_pem`` is the plugin's own PKCS#8 PEM, encrypted (with ``passphrase``) or not
+    (``None``). The request carries ``field_type``, ``op``, ``block``, ``query``, ``picks``,
+    ``values``, ``inputs`` and the caller's ``reply_key`` — seal the answer to it with
+    :func:`plugin_seal_reply`. This is a function for the plugin's server, never a call on the
+    allme API.
+
+    Raises :class:`DecryptError` when the body, the wrapper or the key is not usable, or the
+    plaintext is not a JSON object. A plugin answers a request sealed to a key it no longer
+    holds with ``409 {"error": "key_unknown"}``.
+    """
+    parsed = body
+    if isinstance(body, (bytes, bytearray)):
+        body = body.decode("utf-8", errors="strict")
+    if isinstance(body, str):
+        try:
+            parsed = json.loads(body)
+        except ValueError as exc:
+            raise DecryptError("plugin call body is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise DecryptError("plugin call body must be a JSON object")
+    request = parsed.get("request")
+    if not isinstance(request, (str, dict)):
+        raise DecryptError("plugin call body has no 'request' wrapper")
+    pem = private_key_pem.encode("utf-8") if isinstance(private_key_pem, str) else private_key_pem
+    plaintext = decrypt(request, load_private_key(pem, passphrase))
+    try:
+        opened = json.loads(plaintext)
+    except ValueError as exc:
+        raise DecryptError("plugin request plaintext is not valid JSON") from exc
+    if not isinstance(opened, dict):
+        raise DecryptError("plugin request plaintext must be a JSON object")
+    return opened
+
+
+def plugin_seal_reply(reply: dict, reply_key_spki: str) -> dict:
+    """For a PLUGIN'S OWN SERVER: seal a reply to the request's ``reply_key``.
+
+    ``reply`` is the reply plaintext — ``{"options": [{id, label}], "more": bool}``,
+    ``{"outputs": {key: value | None}}`` or ``{"picks_invalid": True}`` — and the result is
+    the response body ``{"reply": "<wrapper string>"}``.
+    """
+    wrapper = encrypt_for_public_key(json.dumps(reply), load_public_key(reply_key_spki))
+    return {"reply": json.dumps(wrapper)}

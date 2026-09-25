@@ -31,6 +31,7 @@ agrees byte-for-byte.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from datetime import date
@@ -132,7 +133,7 @@ def _str(v: Any) -> str:
 # order, so a condition leaf {field: <constKey>} resolves through the unchanged
 # ``evaluate`` above. ``None`` propagates: an unresolved operand yields
 # ``None``; a ``None`` constant behaves like an unanswered field in conditions.
-# Pinned by ``contract-flow-constants-vector.json`` (51 cases).
+# Pinned by ``contract-flow-constants-vector.json`` (62 cases).
 
 _DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
@@ -235,6 +236,18 @@ def eval_expr(expr: Any, answers: Mapping[str, Any], reference_date: Any) -> Any
         return None
 
     if t == "math":
+        # max/min are variadic and skip what is not a number: only the args that coerce to a
+        # FINITE number take part, so a None or text arg never nulls the whole result. They run
+        # before the None guard below for exactly that reason; no numeric arg at all → None.
+        if expr.get("op") in ("max", "min"):
+            found = []
+            for a in (expr.get("args") or []):
+                n = _to_num(eval_expr(a, answers, reference_date))
+                if n is not None and math.isfinite(n):
+                    found.append(n)
+            if not found:
+                return None
+            return max(found) if expr.get("op") == "max" else min(found)
         nums = [_to_num(eval_expr(a, answers, reference_date)) for a in (expr.get("args") or [])]
         # Any null / non-numeric (incl. bool) arg → None; a non-finite arg (a
         # string like "1e309" coercing to inf) → None (pinned non-finite policy).
@@ -376,20 +389,190 @@ def evaluate_flow_condition(
     return evaluate(condition, compute_constants(constants, answers, reference_date))
 
 
-def resolved_constants(constants: Any, answers: Mapping[str, Any], reference_date: Any) -> dict:
+def resolved_constants(
+    constants: Any,
+    answers: Mapping[str, Any],
+    reference_date: Any,
+    plugin_slugs: Any = None,
+) -> dict:
     """Return the computed constant values ONLY — a ``{key: value}`` map.
 
     Convenience for reading a (data_only) run's constants: pass the pinned
     definition's ``constants`` list, the decrypted answers, and the run's
     immutable ``reference_date`` (``run.reference_date``). The answers are NOT
     folded into the result — one entry per declared constant key.
+
+    ``plugin_slugs`` — the definition's plugin element slugs — expands every plugin
+    answer first (``expand_plugin_answers``), so a constant can read ``slug``,
+    ``slug.<block>`` and ``slug.<output>``; omit it when the flow has no plugin element.
     """
-    full = compute_constants(constants, answers, reference_date)
+    source = expand_plugin_answers(answers, plugin_slugs) if plugin_slugs is not None else answers
+    full = compute_constants(constants, source, reference_date)
     out: dict = {}
     for c in (constants if isinstance(constants, list) else []):
         if isinstance(c, dict) and isinstance(c.get("key"), str):
             out[c["key"]] = full.get(c["key"])
     return out
+
+
+# ── Plugin answers. Pure; pinned by the shared constants vector. ───────────────────────────────
+# A plugin answer's plaintext is a self-describing JSON object:
+#   {"plugin","type","blocks":[{key,kind,label,id?,value}],"outputs":[{key,type,label,value}]}
+# An answer without an ``outputs`` array is unfinished.
+
+_PLUGIN_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+
+
+def _parse_plugin_object(plaintext: Any):
+    """The plaintext parsed as a JSON object, or None when it is not a string holding one."""
+    if not isinstance(plaintext, str):
+        return None
+    try:
+        parsed = json.loads(plaintext)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _plugin_key_ok(key: Any) -> bool:
+    return isinstance(key, str) and key != "id" and _PLUGIN_KEY.fullmatch(key) is not None
+
+
+def _plugin_summary(answer: dict) -> str:
+    """The blocks' values in stored order, each stringified, joined by " / "."""
+    blocks = answer.get("blocks") if isinstance(answer.get("blocks"), list) else []
+    return " / ".join(_str(b.get("value") if isinstance(b, dict) else None) for b in blocks)
+
+
+def expand_plugin_answers(answers: Mapping[str, Any], plugin_slugs: Any) -> dict:
+    """Expand every plugin answer of ``answers`` into the keys a condition, a constant or a bound reads.
+
+    Returns a NEW map; the input is not changed. For each slug of ``plugin_slugs`` whose answer
+    is a string: a value that is not a JSON object is left as it is; a JSON object without an
+    ``outputs`` array is an unfinished answer and its entry is REMOVED; a finished one is
+    replaced by its summary (the blocks' values joined by " / ") and adds ``slug.<block>`` (the
+    block's stored value), ``slug.<block>.id`` (a ``search_select`` block's picked id, as a
+    string) and ``slug.<output>`` (the output's typed value). A block or output key that is
+    ``id`` or does not match ``^[a-z][a-z0-9_]{0,39}$``, and a None value, add nothing. A slug
+    not in ``plugin_slugs`` is never touched.
+    """
+    out = dict(answers or {})
+    for slug in (plugin_slugs if isinstance(plugin_slugs, (list, tuple)) else []):
+        if not isinstance(slug, str) or slug not in out:
+            continue
+        answer = _parse_plugin_object(out[slug])
+        if answer is None:
+            continue
+        if not isinstance(answer.get("outputs"), list):
+            del out[slug]
+            continue
+        out[slug] = _plugin_summary(answer)
+        for b in (answer.get("blocks") if isinstance(answer.get("blocks"), list) else []):
+            if not isinstance(b, dict) or not _plugin_key_ok(b.get("key")):
+                continue
+            key = b["key"]
+            if b.get("value") is not None:
+                out[f"{slug}.{key}"] = b["value"]
+            if b.get("kind") == "search_select" and b.get("id") is not None:
+                out[f"{slug}.{key}.id"] = _str(b["id"])
+        for o in answer["outputs"]:
+            if not isinstance(o, dict) or not _plugin_key_ok(o.get("key")):
+                continue
+            if o.get("value") is not None:
+                out[f"{slug}.{o['key']}"] = o["value"]
+    return out
+
+
+def plugin_answer_summary(plaintext: Any):
+    """A plugin answer's summary (its blocks' values joined by " / "), or None when it is unfinished or not one."""
+    answer = _parse_plugin_object(plaintext)
+    if answer is None or not isinstance(answer.get("outputs"), list):
+        return None
+    return _plugin_summary(answer)
+
+
+def plugin_answer_view(plaintext: Any):
+    """A plugin answer for display, or None.
+
+    ``{"blocks": [{label, value}], "outputs": [{label, type, value}]}`` in stored order (a
+    ``search_select`` block's value is its option label); None when the plaintext is not a
+    JSON object with an ``outputs`` array.
+    """
+    answer = _parse_plugin_object(plaintext)
+    if answer is None or not isinstance(answer.get("outputs"), list):
+        return None
+
+    def member(o: Any, name: str) -> Any:
+        return o.get(name) if isinstance(o, dict) else None
+
+    blocks = answer.get("blocks") if isinstance(answer.get("blocks"), list) else []
+    return {
+        "blocks": [{"label": member(b, "label"), "value": member(b, "value")} for b in blocks],
+        "outputs": [
+            {"label": member(o, "label"), "type": member(o, "type"), "value": member(o, "value")}
+            for o in answer["outputs"]
+        ],
+    }
+
+
+# ── Helpers the SDK's own flow code reads (not part of the package's public surface). ─────
+
+
+def flow_number(v: Any):
+    """The evaluator's own number coercion: a finite number, a numeric string, else None."""
+    n = _to_num(v)
+    return n if n is not None and math.isfinite(n) else None
+
+
+def flow_date(v: Any):
+    """The evaluator's strict ``YYYY-MM-DD`` reading, or None."""
+    return _parse_flow_date(v)
+
+
+def flow_string(v: Any) -> str:
+    """The evaluator's own stringification."""
+    return _str(v)
+
+
+def flow_expr_refs(expr: Any) -> list:
+    """Every key an expression reads: its ``ref`` keys and the fields of its ``if`` conditions."""
+    acc: dict = {}
+
+    def walk_cond(cond: Any) -> None:
+        if not isinstance(cond, dict):
+            return
+        if cond.get("op") in _BOOL_OPS:
+            for ch in (cond.get("children") or []):
+                walk_cond(ch)
+            return
+        if isinstance(cond.get("field"), str):
+            acc[cond["field"]] = True
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        t = node.get("type")
+        if t == "ref":
+            if isinstance(node.get("key"), str):
+                acc[node["key"]] = True
+        elif t == "if":
+            for cs in (node.get("cases") or []):
+                if isinstance(cs, dict):
+                    walk_cond(cs.get("when"))
+                    walk(cs.get("then"))
+            walk(node.get("else"))
+        elif t == "concat":
+            for p in (node.get("parts") or []):
+                walk(p)
+        elif t == "datediff":
+            walk(node.get("from"))
+            walk(node.get("to"))
+        elif t == "math":
+            for a in (node.get("args") or []):
+                walk(a)
+
+    walk(expr)
+    return list(acc)
 
 
 __all__ = [
@@ -398,4 +581,7 @@ __all__ = [
     "compute_constants",
     "evaluate_flow_condition",
     "resolved_constants",
+    "expand_plugin_answers",
+    "plugin_answer_summary",
+    "plugin_answer_view",
 ]
