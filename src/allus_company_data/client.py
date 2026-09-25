@@ -73,6 +73,7 @@ from .crypto import (
 )
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError, ValidationError
 from .field_types import FieldTypeRegistry
+from .flow_condition import compute_constants as _compute_constants
 from .flow_condition import evaluate as evaluate_condition
 from .http import HttpClient
 from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField
@@ -1135,7 +1136,7 @@ class Client:
                 values.append({"for_user_id": uid, "value": encrypt_for_public_key(plain, key)})
             answers_out.append({"slug": slug, "values": values})
 
-        nxt = _compute_next(run.definition, run.current_node, full)
+        nxt = _compute_next(run.definition, run.current_node, full, run.reference_date)
         body: dict = {"answers": answers_out}
         if nxt.get("leaf"):
             body["leaf"] = True
@@ -1194,7 +1195,9 @@ class Client:
             return run
         answers = self._decrypt_run_answers(run)
         fill = fill_node(node, answers) or {}
-        was_leaf = _compute_next(run.definition, run.current_node, {**answers, **fill}).get("leaf")
+        was_leaf = _compute_next(
+            run.definition, run.current_node, {**answers, **fill}, run.reference_date
+        ).get("leaf")
         run = self.submit_flow_answers(run, fill, party_pubkeys=party_pubkeys)
         if was_leaf and (run.output_mode or run.definition.get("output_mode")) == "document":
             self.generate_flow_document(run)
@@ -1212,11 +1215,11 @@ def _node_by_key(definition: dict, key: Optional[str]) -> Optional[dict]:
     return None
 
 
-def _compute_next(definition: dict, from_key: Optional[str], answers: dict) -> dict:
-    """The next node after ``from_key`` — ordered outgoing edges, first match wins.
+def _compute_next(definition: dict, from_key: Optional[str], answers: dict, reference_date: Any) -> dict:
+    """The next node after ``from_key``: ordered outgoing edges, first match wins.
 
-    Returns ``{"next_node": key}`` or ``{"leaf": True}`` (no outgoing edge, or none
-    matched — a dead-end is treated as a leaf, matching the platform engine).
+    Conditions use the answers plus computed constants at the run reference date.
+    Returns a leaf when no outgoing edge matches.
     """
     edges = sorted(
         (e for e in definition.get("edges", []) if isinstance(e, dict) and e.get("from") == from_key),
@@ -1224,8 +1227,9 @@ def _compute_next(definition: dict, from_key: Optional[str], answers: dict) -> d
     )
     if not edges:
         return {"leaf": True}
+    materialized = _compute_constants(definition.get("constants"), answers, reference_date)
     for e in edges:
-        if evaluate_condition(e.get("condition"), answers):
+        if evaluate_condition(e.get("condition"), materialized):
             return {"next_node": e["to"]}
     return {"leaf": True}
 
