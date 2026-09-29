@@ -1034,6 +1034,7 @@ trigger_flow_run(flow_id, *, connection_id, bindings, source_files=None) -> Flow
 stage_run_file(flow_id, sealed_value)                      -> str      # staged file name
 upload_answer_file(run_id, slug, for_user_id, sealed_value) -> str     # answer file name
 flow_run_source_file(run_id, source_key)                   -> dict     # the sealed wrapper
+published_flow(flow_id)                                    -> PublishedFlow
 flow_runs(*, status="awaiting_company")                    -> list[FlowRun]
 flow_run(run_id)                                            -> FlowRun
 flow_run_answers(run)                                        -> dict[str, str]  # #491 gap 1
@@ -1044,6 +1045,7 @@ identity()                                                    -> dict           
 ```
 
 * `trigger_flow_run(flow_id, connection_id=..., bindings={...})` starts a run bound to a connection and the flow's other parties, pinning the flow's latest **published** version.
+* `trigger_flow_run` reads the flow's latest published version first (`published_flow(flow_id)` — its `version`, `definition` and the service's request-field types) and sends it as `flow_version`. When that version's text elements show the customer's shared values (`{{party.field}}` tags), it opens those values from the connection with the service key and seals them per recipient — ONE wrapper of the non-private values, and each private value on its own — to the company (the service key) and to the customer, and sends them as `tag_values`; the connection's `values_private` decides which values are private (a slug it does not name is private). A newer publish in between (`flows.version_changed`) is re-read and retried once; a customer key that changed (`flows.tag_values_stale`) is re-read and retried once; a stale SERVICE key raises a `ConfigError` — rebuild the client with the service's current private key. The run carries `owner_tag_values` (the owning company's profile values the text names, plaintext) and `tag_values` (the company's sealed set).
 * `flow_runs(status=...)` / `flow_run(run_id)` list / fetch runs. `status=None` returns everything; the default `"awaiting_company"` is the actionable queue.
 * `flow_run_answers(run)` (#491 gap 1) — a run's **decrypted** answers as `{slug: plaintext}`, reading the company's service-key answer copies. Accepts a loaded `FlowRun` or a run id (fetched via `flow_run`).
 * `submit_flow_answers` / `generate_flow_document` / `process_flow_run` fill the company's current node, advance the run (encrypting one answer copy per bound party), and — at a document-mode leaf — generate its output documents. See the method docstrings for the full per-party encryption details.

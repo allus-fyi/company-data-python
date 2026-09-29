@@ -466,6 +466,9 @@ class Connection:
     # The customer's profile share code (previously only reachable via ``.raw``).
     share_code: Optional[str] = None
     raw: dict = field(default_factory=dict, repr=False)
+    # Per answered slug, whether its value is private — the source field's privacy, False for an
+    # answer with no source field. A slug absent here is private. Metadata only.
+    values_private: Dict[str, bool] = field(default_factory=dict)
 
     @classmethod
     def from_api(
@@ -518,6 +521,9 @@ class Connection:
             values=values,
             customer_type=obj.get("customer_type") or identity.get("customer_type"),
             share_code=obj.get("share_code") or identity.get("share_code"),
+            values_private={
+                str(k): v for k, v in (obj.get("values_private") or {}).items() if isinstance(v, bool)
+            } if isinstance(obj.get("values_private"), dict) else {},
             raw=obj,
         )
 
@@ -817,6 +823,13 @@ class FlowRun:
     # owning company's on the service ``Client``, the customer's own on ``CustomerClient``.
     # Empty when the run holds none.
     source_files: Dict[str, str] = field(default_factory=dict)
+    # The owning company's profile values the run's owner-party text tags name, fixed at start:
+    # ``"party.field"`` → ``{"v": value, "t": field_type}``. None on a run whose text names none.
+    owner_tag_values: Optional[Dict[str, dict]] = None
+    # The company's sealed values for the run's non-owner party text tags, fixed at start:
+    # ``{"public": wrapper, "public_tags": [tag], "private": {tag: wrapper}}``, sealed to the
+    # service key. None on a run whose text names none.
+    tag_values: Optional[dict] = None
 
     @property
     def company_party_key(self) -> Optional[str]:
@@ -874,6 +887,38 @@ class FlowRun:
                 if isinstance(obj.get("source_files"), dict)
                 else {}
             ),
+            owner_tag_values=(
+                {str(k): v for k, v in obj["owner_tag_values"].items() if isinstance(v, dict)}
+                if isinstance(obj.get("owner_tag_values"), dict)
+                else None
+            ),
+            tag_values=(
+                obj["tag_values"]
+                if isinstance(obj.get("tag_values"), dict) and isinstance(obj["tag_values"].get("public"), str)
+                else None
+            ),
+        )
+
+
+@dataclass
+class PublishedFlow:
+    """The latest published version of a flow — what :meth:`Client.trigger_flow_run` compiles from."""
+
+    version: int
+    definition: dict
+    # The service's request fields: slug → field type.
+    request_field_types: Dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_api(cls, obj: dict) -> "PublishedFlow":
+        obj = obj if isinstance(obj, dict) else {}
+        types = obj.get("request_field_types")
+        return cls(
+            version=int(obj.get("version") or 0),
+            definition=obj.get("definition") if isinstance(obj.get("definition"), dict) else {},
+            request_field_types={
+                str(k): v for k, v in types.items() if isinstance(v, str)
+            } if isinstance(types, dict) else {},
         )
 
 

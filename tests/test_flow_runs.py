@@ -121,12 +121,19 @@ def test_trigger_flow_run(config):
         captured["body"] = json_body
         return FakeResponse(201, json_body=_run_obj())
 
-    client, _ = _client_rw(config, _no_get, write_router)
+    def published_router(url, params):
+        assert url.endswith("/company-data/flows/flow-1/published")
+        return FakeResponse(200, json_body={"version": 3, "definition": {"parties": [], "nodes": []},
+                                            "request_field_types": {}})
+
+    client, _ = _client_rw(config, published_router, write_router)
     run = client.trigger_flow_run("flow-1", connection_id="csc-1",
                                   bindings={"company": COMPANY_UID, "person": PERSON_UID})
     assert captured["method"] == "POST"
     assert captured["url"].endswith("/company-data/flows/flow-1/runs")
     assert captured["body"]["target"] == {"connection_id": "csc-1"}
+    assert captured["body"]["flow_version"] == 3
+    assert "tag_values" not in captured["body"]
     assert captured["body"]["bindings"]["person"] == PERSON_UID
     assert isinstance(run, FlowRun)
     assert run.id == "run-1" and run.company_party_key == "company"

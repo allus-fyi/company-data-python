@@ -71,7 +71,8 @@ CALL_CONNECTIONS = (
 )
 CALL_TRIGGER = (
     "Client.trigger_flow_run — starts a run of the published flow for that connection, pinning "
-    "the flow's latest published version"
+    "the flow's latest published version — reads that version first and, when its text shows the "
+    "customer's shared values, seals them for the company and the customer and sends them with it"
 )
 CALL_FLOW_RUN = "Client.flow_run — re-read on every poll to see whose turn the run is on"
 CALL_PROCESS = (

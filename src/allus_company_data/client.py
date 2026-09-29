@@ -51,6 +51,7 @@ How it is wired (the "everything else the SDK hides"):
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import threading
@@ -59,6 +60,7 @@ from typing import Any, Callable, Iterator, List, Optional
 from urllib.parse import quote
 
 import requests
+from cryptography.hazmat.primitives import serialization
 
 from .config import Config
 from .crypto import decrypt as crypto_decrypt
@@ -89,7 +91,8 @@ from .flow_plugins import (
     prepare_plugin_call,
 )
 from .http import HttpClient
-from .models import Change, Connection, Document, FlowRun, LogEntry, RequestField
+from .models import Change, Connection, Document, FlowRun, LogEntry, PublishedFlow, RequestField
+from .flow_text import PartyTag, non_owner_party_tags
 from .pump import Pump
 from . import webhooks as _webhooks
 
@@ -983,6 +986,13 @@ class Client:
 
     # ── contract-flow runs (company side — the company is a bound party) ─────────
 
+    def published_flow(self, flow_id: str) -> PublishedFlow:
+        """The latest PUBLISHED version of a flow → :class:`PublishedFlow` (``version``,
+        ``definition`` and the service's request-field types).
+        ``GET /api/company-data/flows/{flowId}/published``.
+        """
+        return PublishedFlow.from_api(self._http.get(f"{_FLOWS}/{flow_id}/published"))
+
     def trigger_flow_run(
         self,
         flow_id: str,
@@ -994,9 +1004,8 @@ class Client:
         """Start a run for a connection.
 
         ``bindings`` = ``{party_key: user_id}`` covering the flow's parties (each
-        bound user must be the company or the connected person). Pins the flow's
-        latest PUBLISHED version. ``connection_id`` is the person-side
-        ``company_service_connections.id`` for this service. Returns the created
+        bound user must be the company or the connected person). ``connection_id`` is the
+        person-side ``company_service_connections.id`` for this service. Returns the created
         :class:`FlowRun` (status ``awaiting_<entry node's party>``).
 
         ``source_files`` = ``[{"source_key", "for_user_id", "file"}]``: one staged copy
@@ -1005,15 +1014,99 @@ class Client:
         sealed to the service key. A start whose list is not exactly that set is refused with
         :class:`ApiError` ``flows.source_files_invalid``, whose ``details`` carry ``missing``
         (``[{source_key, for_user_id}]``) and ``unexpected`` (``[file]``); nothing is written.
+
+        Reads the flow's latest published version (:meth:`published_flow`) and pins it with
+        ``flow_version``. When that version's text elements show the connected customer's shared
+        values (``{{party.field}}`` tags), the SDK opens those values with the service key and seals
+        them per recipient — one wrapper of the non-private values and one per private value, to
+        the company (the service key) and to the customer — and sends them as ``tag_values``. A
+        newer publish in between (``flows.version_changed``) is re-read and retried once; a customer
+        key that changed (``flows.tag_values_stale``) is re-read and retried once. A stale SERVICE
+        key raises :class:`ConfigError`: rebuild the client with the service's current private key.
         """
-        body: dict = {"target": {"connection_id": connection_id}, "bindings": bindings}
-        if source_files:
-            body["source_files"] = [
-                {"source_key": s["source_key"], "for_user_id": s["for_user_id"], "file": s["file"]}
-                for s in source_files
-            ]
-        created = self._http.post(f"{_FLOWS}/{flow_id}/runs", json_body=body)
-        return FlowRun.from_api(created)
+        published = self.published_flow(flow_id)
+        version_retried = False
+        stale_retried = False
+        while True:
+            body = {
+                "target": {"connection_id": connection_id},
+                "bindings": bindings,
+                "flow_version": published.version,
+            }
+            if source_files:
+                body["source_files"] = [
+                    {"source_key": s["source_key"], "for_user_id": s["for_user_id"], "file": s["file"]}
+                    for s in source_files
+                ]
+            share_code = None
+            tags = non_owner_party_tags(published.definition)
+            if tags:
+                body["tag_values"], share_code = self._compile_tag_values(tags, published, connection_id)
+            try:
+                created = self._http.post(f"{_FLOWS}/{flow_id}/runs", json_body=body)
+                return FlowRun.from_api(created)
+            except ApiError as e:
+                if e.error_key == "flows.version_changed" and not version_retried:
+                    version_retried = True
+                    published = self.published_flow(flow_id)
+                    continue
+                if e.error_key == "flows.tag_values_stale":
+                    stale = e.details.get("stale") if isinstance(e.details.get("stale"), list) else []
+                    if "company" in stale:
+                        raise ConfigError(
+                            "the configured service private key is not this service's current key — "
+                            "rebuild the client with the current service private key"
+                        ) from e
+                    if not stale_retried and share_code:
+                        stale_retried = True
+                        self.invalidate_public_key(share_code)
+                        continue
+                raise
+
+    def _compile_tag_values(self, tags: List[PartyTag], published: PublishedFlow, connection_id: str):
+        """The ``tag_values`` for one start, and the customer's share code: the connected
+        customer's shared values the text names, opened with the service key and sealed to the
+        company (the service key) and to the customer. A value that is absent or does not open is
+        left out; ``values_private`` decides which are private (a slug it does not name is private).
+        """
+        detail = self._http.get(f"{_CONNECTIONS}/{connection_id}")
+        detail = detail if isinstance(detail, dict) else {}
+        user_id = str(detail.get("user_id") or "")
+        share_code = str(detail.get("share_code") or "")
+        if not user_id or not share_code:
+            raise ConfigError(f"connection {connection_id} has no customer key to seal the run's values to")
+        values = detail.get("values") if isinstance(detail.get("values"), dict) else {}
+        privacy = detail.get("values_private") if isinstance(detail.get("values_private"), dict) else {}
+        entries = []
+        for t in tags:
+            cell = values.get(t.field)
+            wrapper = cell.get("value") if isinstance(cell, dict) else None
+            if not isinstance(wrapper, str) or not wrapper:
+                continue
+            try:
+                v = crypto_decrypt(wrapper, self._private_key)
+            except Exception:
+                continue
+            if not isinstance(v, str) or v == "":
+                continue
+            entries.append((t.tag, privacy.get(t.field) is not False, {"v": v, "t": published.request_field_types.get(t.field)}))
+
+        def seal(key, text: str) -> str:
+            return json.dumps(encrypt_for_public_key(text, key))
+
+        def recipient(key) -> dict:
+            public_map = {tag: value for tag, is_private, value in entries if not is_private}
+            der = key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+            return {
+                "recipient_pubkey_sha256": hashlib.sha256(der).hexdigest(),
+                "public": seal(key, json.dumps(public_map)),
+                "public_tags": list(public_map.keys()),
+                # One bound customer: every private value the text names is its own.
+                "private": {tag: seal(key, json.dumps(value)) for tag, is_private, value in entries if is_private},
+            }
+
+        customer_key = self._recipient_public_key(share_code)
+        return {"company": recipient(self._service_public_key()), user_id: recipient(customer_key)}, share_code
 
     def stage_run_file(self, flow_id: str, sealed_value: Any) -> str:
         """Stage one sealed copy of a connection source for a run start → its ``file``.
