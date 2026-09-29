@@ -28,10 +28,12 @@ import threading
 import logging
 import time
 from typing import Any, Callable, List, Optional
+from urllib.parse import quote
 
 from . import webhooks as _webhooks
 from .config import Config
-from .crypto import decrypt as crypto_decrypt, encrypt_for_public_key, load_public_key, one_time_key_bundle
+from .crypto import decrypt as crypto_decrypt, encrypt_for_public_key, load_public_key
+from .flow_sources import HeldSource, file_ref, generate_with_inputs, held_sources
 from .customer_models import CustomerConnection
 from .errors import ConfigError, ValidationError
 from .field_types import FieldTypeRegistry
@@ -320,6 +322,10 @@ class CustomerClient:
         company's OWN copy of the answers, decrypted with the account key — every party's answers
         are sealed to every bound party, so that copy holds the whole run and no service key is
         involved — and is sealed with :func:`~allus_company_data.crypto.one_time_key_bundle`.
+        Every participant PDF source the leaf's rules name that the run holds for this company
+        (a ``source_field`` whose own answer is a file, a ``source_connection`` in
+        ``run.source_files``) is first fetched through ``answer-files``, decrypted with the
+        account key, sealed under the same one-time key and uploaded to ``/generate/inputs``.
         Returns the API response ``{documents, status}`` — ``documents`` is one
         ``{output_key, party_key, document_id, position}`` per produced (output document,
         participant) (idempotent — a repeat answers the same set).
@@ -335,9 +341,21 @@ class CustomerClient:
         step = self._flow_party_view(run, with_answers=False)
         if own_uid is None or not any((run.bindings or {}).get(k) == own_uid for k in step.own_party_keys):
             raise ConfigError(f"run {run.id} is not at a step this company answered")
-        return self._http.post(
-            f"{_CONN}/{connection_id}/flow-runs/{run.id}/generate",
-            json_body=one_time_key_bundle(self._flow_party_view(run).stored),
+        base = f"{_CONN}/{connection_id}/flow-runs/{run.id}"
+
+        def envelope_of(src: HeldSource) -> str:
+            # This company's own copy of a held source — its own answer file, or its own copy of
+            # a connection source made at run start — both served by the answer-files route.
+            resp = self._http.get_response(f"{base}/answer-files/{quote(src.file, safe='')}")
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            return self._decrypt_account(self._http.parse_body(resp, "xml" in content_type))
+
+        return generate_with_inputs(
+            lambda path, body: self._http.post(path, json_body=body),
+            f"{base}/generate",
+            self._flow_party_view(run).stored,
+            held_sources(run.definition, run.current_node, run.answers, own_uid, run.source_files),
+            envelope_of,
         )
 
     def check_flow_value(self, run: FlowRun, slug: str, value: Any, draft: Optional[dict] = None) -> None:
@@ -435,7 +453,12 @@ class CustomerClient:
                     continue
                 slug, v = row.get("slug"), row.get("value")
                 if isinstance(slug, str) and v is not None:
-                    stored[slug] = self._decrypt_account(v)
+                    # A file answer is a plaintext {"_enc_file": …} reference, not a wrapper;
+                    # it stands in the map as that reference, which reads as answered.
+                    if file_ref(v) is not None:
+                        stored[slug] = v if isinstance(v, str) else json.dumps(v)
+                    else:
+                        stored[slug] = self._decrypt_account(v)
         return FlowPartyView(
             definition=run.definition,
             current_node=run.current_node,

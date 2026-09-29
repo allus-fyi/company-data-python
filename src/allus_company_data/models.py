@@ -813,6 +813,10 @@ class FlowRun:
     # when the API did not send the list — unknown, which the SDK treats as private for every
     # other party.
     private_slugs: Optional[List[str]] = None
+    # The viewer's own copies of the run's connection sources, ``{source_key: file}`` — the
+    # owning company's on the service ``Client``, the customer's own on ``CustomerClient``.
+    # Empty when the run holds none.
+    source_files: Dict[str, str] = field(default_factory=dict)
 
     @property
     def company_party_key(self) -> Optional[str]:
@@ -864,6 +868,11 @@ class FlowRun:
                 [str(x) for x in obj["private_slugs"] if x is not None]
                 if isinstance(obj.get("private_slugs"), list)
                 else None
+            ),
+            source_files=(
+                {str(k): v for k, v in obj["source_files"].items() if isinstance(v, str)}
+                if isinstance(obj.get("source_files"), dict)
+                else {}
             ),
         )
 

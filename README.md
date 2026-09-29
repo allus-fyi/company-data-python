@@ -1030,7 +1030,10 @@ form the platform walks to gather (and end-to-end encrypt) answers, optionally
 finishing at a document-generating leaf. These calls cover the company's turn:
 
 ```python
-trigger_flow_run(flow_id, *, connection_id, bindings)      -> FlowRun
+trigger_flow_run(flow_id, *, connection_id, bindings, source_files=None) -> FlowRun
+stage_run_file(flow_id, sealed_value)                      -> str      # staged file name
+upload_answer_file(run_id, slug, for_user_id, sealed_value) -> str     # answer file name
+flow_run_source_file(run_id, source_key)                   -> dict     # the sealed wrapper
 flow_runs(*, status="awaiting_company")                    -> list[FlowRun]
 flow_run(run_id)                                            -> FlowRun
 flow_run_answers(run)                                        -> dict[str, str]  # #491 gap 1
@@ -1048,6 +1051,33 @@ identity()                                                    -> dict           
 * A `FlowRun`'s `participants` are `FlowRunParticipant(party_key, person_user_id, connection_id, documents)`; `documents` is that participant's own copy of each output document — `FlowRunParticipantDocument(output_key, name, document_id, document_status, requires_signature, requires_acceptance, position, action, acted_at)`, ordered by line position.
 * `identity()` (#491 gap 3) — this client's own `{"company_user_id": ..., "service_id": ...}` from `GET /api/company-data/whoami`. `trigger_flow_run`'s company-side binding must use `company_user_id` (the person party's user_id comes from the connection) — without this call it was unconstructible through the SDK.
 
+**Participant PDFs.** A leaf output rule's PDF is a company template, a flow field's answer
+(`source_field`, source key `field:<slug>`, a field of type `pdf_document`) or what a bound customer
+shared on its connection (`source_connection`, source key `conn:<party>:<request_slug>`). A rule
+whose source the run does not hold does not match; the next rule is tried.
+
+* **Connection sources are copied at run start.** For every answered `pdf_document` request slot a
+  rule of the pinned version names, the caller reads the customer's shared file, seals its envelope
+  JSON once per distinct bound user (the company's own copy to the service key) and stages each with
+  `stage_run_file(flow_id, sealed_value)` (`POST /api/company-data/flows/{flowId}/run-files`), then
+  passes `source_files=[{"source_key", "for_user_id", "file"}]` to `trigger_flow_run`. A list that is
+  not exactly the required set is refused with `ApiError` `flows.source_files_invalid`; its `details`
+  carry `missing` (`[{source_key, for_user_id}]`) and `unexpected` (`[file]`), and nothing is written.
+* `FlowRun.source_files` is the company's own copies, `{source_key: file}` (`{}` when none).
+  `flow_run_source_file(run_id, source_key)` returns the stored copy — a wrapper that opens with the
+  service key (`GET /api/company-data/flow-runs/{runId}/source-files/{sourceKey}`).
+* **A company turn can answer a binary field.** `upload_answer_file(run_id, slug, for_user_id,
+  sealed_value)` (`POST /api/company-data/flow-runs/{runId}/answer-files`) uploads one bound party's
+  sealed copy; upload one per bound party, then submit `{"_enc_file": file}` as each party's value.
+  An answer that is such a file reference reads as answered in the run's answer map.
+* **Generation uploads the held source PDFs.** `generate_flow_document` (and `process_flow_run` at a
+  document leaf) fetches the company's own copy of every source of the leaf's rules the run holds — a
+  `source_field` whose own answer is a file (`slots/{slug}/file`), a `source_connection` in
+  `source_files` — decrypts it, seals it under the call's one-time key and uploads it to
+  `/generate/inputs` before generating with `inputs: [{source_key, input}]`. `flows.generate_inputs_mismatch`
+  refuses inputs that are not the held set; `flows.source_pdf_invalid` refuses a source that is not a
+  usable PDF (the run stays `generating`).
+
 **The party that answers a run's last step generates the contract — the customer role included.**
 When your company is a CUSTOMER of another company's service and its answer completes a document-mode
 leaf, the run parks at `generating` until you generate:
@@ -1058,7 +1088,8 @@ customer.generate_flow_document(connection_id, run)   -> dict   # POST /api/comp
 
 Pass the run as re-read after your leaf submit. The answer map comes from your OWN copy of the run's
 answers, decrypted with the account key — every party's answers are sealed to every bound party, so
-that copy holds the whole run and no service key is involved. Returns `{documents, status}` — one
+that copy holds the whole run and no service key is involved. The held source PDFs are uploaded first
+from your own copies (`answer-files`, decrypted with the account key), as on the service client. Returns `{documents, status}` — one
 `{output_key, party_key, document_id, position}` per produced (output document, participant); a repeat
 answers the same set. Raises `ConfigError` when the run's current step is
 not bound to your company.

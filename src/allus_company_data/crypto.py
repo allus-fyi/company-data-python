@@ -601,26 +601,40 @@ class BinaryHandle:
         return len(data)
 
 
-def one_time_key_bundle(answers: dict) -> dict:
+def new_one_time_key() -> bytes:
+    """A fresh random 32-byte AES-256-GCM key for one ``/generate`` call."""
+    return secrets.token_bytes(32)
+
+
+def one_time_key_seal(otk: bytes, plaintext: str) -> str:
+    """Seal ``plaintext`` under a one-time key → ``base64(iv(12)||ciphertext||tag(16))``.
+
+    The layout of a bundle's ``values``; a generation input (a held source PDF's envelope)
+    is sealed the same way under the same key as the call's ``values``, with its own fresh iv.
+    """
+    iv = secrets.token_bytes(GCM_IV_LEN)
+    # AESGCM appends the 16-byte tag; the server reads iv(12)||ct||tag(16).
+    blob = iv + AESGCM(otk).encrypt(iv, plaintext.encode("utf-8"), None)
+    return base64.b64encode(blob).decode("ascii")
+
+
+def one_time_key_bundle(answers: dict, otk: Optional[bytes] = None) -> dict:
     """The one-time-key bundle a flow run's ``/generate`` takes: the WHOLE answer map, sealed
     under a key used once and never stored.
 
     ``answers`` is ``{slug: plaintext}`` (a non-string value is JSON-encoded). A random 32-byte
-    AES-256-GCM key encrypts ``JSON(answers)``; the result is packed ``iv(12)||ciphertext||tag(16)``
-    and both halves are base64-encoded → ``{"otk": …, "values": …}``. The server evaluates every
-    leaf-PDF condition, constant and ``{{tag}}`` over this map, so a slug missing from it prints
-    blank on the contract.
+    AES-256-GCM key (or ``otk``, when the call's generation inputs were sealed under it) encrypts
+    ``JSON(answers)``; the result is packed ``iv(12)||ciphertext||tag(16)`` and both halves are
+    base64-encoded → ``{"otk": …, "values": …}``. The server evaluates every leaf-PDF condition,
+    constant and ``{{tag}}`` over this map, so a slug missing from it prints blank on the contract.
     """
     payload = json.dumps(
         {k: (v if isinstance(v, str) else json.dumps(v)) for k, v in answers.items()}
-    ).encode("utf-8")
-    otk = secrets.token_bytes(32)
-    iv = secrets.token_bytes(GCM_IV_LEN)
-    # AESGCM appends the 16-byte tag; the server reads iv(12)||ct||tag(16).
-    blob = iv + AESGCM(otk).encrypt(iv, payload, None)
+    )
+    key = otk if otk is not None else new_one_time_key()
     return {
-        "otk": base64.b64encode(otk).decode("ascii"),
-        "values": base64.b64encode(blob).decode("ascii"),
+        "otk": base64.b64encode(key).decode("ascii"),
+        "values": one_time_key_seal(key, payload),
     }
 
 

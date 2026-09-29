@@ -56,6 +56,7 @@ import logging
 import threading
 import time
 from typing import Any, Callable, Iterator, List, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -68,10 +69,10 @@ from .crypto import (
     encrypt_for_public_key,
     load_private_key,
     load_public_key,
-    one_time_key_bundle,
 )
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError, ValidationError
 from .field_types import FieldTypeRegistry
+from .flow_sources import HeldSource, file_ref, generate_with_inputs, held_sources
 from .flow_condition import compute_constants as _compute_constants
 from .flow_condition import evaluate as evaluate_condition
 from .flow_condition import expand_plugin_answers as _expand_plugin_answers
@@ -982,7 +983,14 @@ class Client:
 
     # ── contract-flow runs (company side — the company is a bound party) ─────────
 
-    def trigger_flow_run(self, flow_id: str, *, connection_id: str, bindings: dict) -> FlowRun:
+    def trigger_flow_run(
+        self,
+        flow_id: str,
+        *,
+        connection_id: str,
+        bindings: dict,
+        source_files: Optional[List[dict]] = None,
+    ) -> FlowRun:
         """Start a run for a connection.
 
         ``bindings`` = ``{party_key: user_id}`` covering the flow's parties (each
@@ -990,10 +998,61 @@ class Client:
         latest PUBLISHED version. ``connection_id`` is the person-side
         ``company_service_connections.id`` for this service. Returns the created
         :class:`FlowRun` (status ``awaiting_<entry node's party>``).
+
+        ``source_files`` = ``[{"source_key", "for_user_id", "file"}]``: one staged copy
+        (:meth:`stage_run_file`) per answered connection source (``conn:<party>:<request_slug>``)
+        a rule of the pinned version names, per distinct bound user — the company's own copy
+        sealed to the service key. A start whose list is not exactly that set is refused with
+        :class:`ApiError` ``flows.source_files_invalid``, whose ``details`` carry ``missing``
+        (``[{source_key, for_user_id}]``) and ``unexpected`` (``[file]``); nothing is written.
         """
-        body = {"target": {"connection_id": connection_id}, "bindings": bindings}
+        body: dict = {"target": {"connection_id": connection_id}, "bindings": bindings}
+        if source_files:
+            body["source_files"] = [
+                {"source_key": s["source_key"], "for_user_id": s["for_user_id"], "file": s["file"]}
+                for s in source_files
+            ]
         created = self._http.post(f"{_FLOWS}/{flow_id}/runs", json_body=body)
         return FlowRun.from_api(created)
+
+    def stage_run_file(self, flow_id: str, sealed_value: Any) -> str:
+        """Stage one sealed copy of a connection source for a run start → its ``file``.
+
+        ``POST /api/company-data/flows/{flow_id}/run-files`` with ``{value}``: ``sealed_value``
+        is the source's envelope JSON sealed to ONE bound user (a ``{"_enc":1,…}`` wrapper, as a
+        dict or its JSON string). Name the returned file in :meth:`trigger_flow_run`'s
+        ``source_files``. An over-budget value is refused ``documents.too_large``.
+        """
+        body = self._http.post(
+            f"{_FLOWS}/{flow_id}/run-files", json_body={"value": _sealed_string(sealed_value)}
+        )
+        return _response_file(body)
+
+    def upload_answer_file(self, run_id: str, slug: str, for_user_id: str, sealed_value: Any) -> str:
+        """Upload one bound party's copy of a binary answer on the company's turn → its ``file``.
+
+        ``POST /api/company-data/flow-runs/{run_id}/answer-files`` with
+        ``{slug, for_user_id, value}``: ``slug`` a binary field of the current step,
+        ``for_user_id`` a bound party, ``sealed_value`` the file's envelope JSON sealed to that
+        party's key (a wrapper dict or its JSON string). Upload one copy per bound party, then
+        submit ``{"_enc_file": file}`` as each party's answer value.
+        """
+        body = self._http.post(
+            f"{_FLOW_RUNS}/{run_id}/answer-files",
+            json_body={"slug": slug, "for_user_id": for_user_id, "value": _sealed_string(sealed_value)},
+        )
+        return _response_file(body)
+
+    def flow_run_source_file(self, run_id: str, source_key: str) -> Any:
+        """The company's own copy of a run's connection source, as stored — the sealed wrapper.
+
+        ``GET /api/company-data/flow-runs/{run_id}/source-files/{source_key}`` (the key, e.g.
+        ``conn:customer:passport``, is URL-encoded). The wrapper opens with the service key; its
+        plaintext is the file's envelope JSON. ``FlowRun.source_files`` lists the run's keys.
+        """
+        return self._binary_fetch(
+            f"{_FLOW_RUNS}/{run_id}/source-files/{quote(source_key, safe='')}"
+        ).wrapper
 
     def flow_runs(self, *, status: Optional[str] = "awaiting_company") -> List[FlowRun]:
         """List this service's runs. Default ``awaiting_company`` = the actionable queue.
@@ -1078,6 +1137,11 @@ class Client:
             slug = row.get("slug")
             v = row.get("value")
             if slug is None or v is None:
+                continue
+            # A file answer is a plaintext {"_enc_file": …} reference, not a wrapper; it stands
+            # in the map as that reference, which reads as answered.
+            if file_ref(v) is not None:
+                out[slug] = v if isinstance(v, str) else json.dumps(v)
                 continue
             out[slug] = crypto_decrypt(v, self._private_key)
         return out
@@ -1272,13 +1336,37 @@ class Client:
         """Document-mode company leaf: one-time-key value gather → POST /generate.
 
         Seals the company's decrypted answers with :func:`one_time_key_bundle` and POSTs
-        ``{otk, values}``. Returns the API response ``{documents, status}`` — ``documents``
-        is one ``{output_key, party_key, document_id, position}`` per produced (output
-        document, participant), ``position`` the step's 1-based place in the run's signing
-        line or ``None`` for an unlisted party (idempotent — a repeat answers the same set).
+        ``{otk, values, inputs}``. Before that, every participant PDF source the current leaf's
+        rules name that the run HOLDS for the company — a ``source_field`` whose own answer is a
+        file, a ``source_connection`` in ``run.source_files`` — is fetched (``slots/{slug}/file``
+        resp. ``source-files/{key}``), decrypted with the service key, sealed under the same
+        one-time key and uploaded to ``/generate/inputs``; ``inputs`` names them. Returns the
+        API response ``{documents, status}`` — ``documents`` is one ``{output_key, party_key,
+        document_id, position}`` per produced (output document, participant), ``position`` the
+        step's 1-based place in the run's signing line or ``None`` for an unlisted party
+        (idempotent — a repeat answers the same set). ``flows.source_pdf_invalid`` refuses a
+        source that is not a usable PDF (the run stays ``generating``).
         """
-        body = one_time_key_bundle(self._decrypt_run_answers(run))
-        return self._http.post(f"{_FLOW_RUNS}/{run.id}/generate", json_body=body)
+        held = held_sources(
+            run.definition, run.current_node, run.answers, run.service_user_id, run.source_files
+        )
+        return generate_with_inputs(
+            lambda path, body: self._http.post(path, json_body=body),
+            f"{_FLOW_RUNS}/{run.id}/generate",
+            self._decrypt_run_answers(run),
+            held,
+            lambda src: self._own_source_envelope(run.id, src),
+        )
+
+    def _own_source_envelope(self, run_id: str, src: HeldSource) -> str:
+        """The company's own copy of one held source, decrypted to its envelope JSON."""
+        if src.kind == "field":
+            wrapper = self._binary_fetch(f"{_FLOW_RUNS}/{run_id}/slots/{src.slug}/file").wrapper
+        else:
+            wrapper = self.flow_run_source_file(run_id, src.source_key)
+        if wrapper is None:
+            raise DecryptError(f"no sealed copy of {src.source_key} was served")
+        return self._decrypt_value(wrapper)
 
     def process_flow_run(
         self,
@@ -1402,6 +1490,19 @@ def _load_service_key(config: Config):
     except DecryptError as exc:
         # A bad passphrase / malformed PEM is a configuration problem (fail fast).
         raise ConfigError(f"could not load service private key: {exc}") from exc
+
+
+def _sealed_string(sealed_value: Any) -> str:
+    """A sealed wrapper as the JSON string an upload body carries."""
+    return sealed_value if isinstance(sealed_value, str) else json.dumps(sealed_value)
+
+
+def _response_file(body: Any) -> str:
+    """The ``file`` of an upload's ``201 {file}`` response."""
+    f = body.get("file") if isinstance(body, dict) else None
+    if not isinstance(f, str) or not f:
+        raise ApiError(0, None, "the upload response carried no file")
+    return f
 
 
 def _doc_obj(body: Any) -> dict:
