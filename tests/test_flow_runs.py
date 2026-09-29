@@ -95,13 +95,18 @@ def _run_obj(*, status="awaiting_company", current="n1", answers=None, definitio
         "bindings": {"company": COMPANY_UID, "person": PERSON_UID},
         "status": status,
         "current_node": current,
-        "document_id": None,
         "output_mode": d.get("output_mode"),
         "definition": d,
         "answers": answers or [],
         "created_at": None,
         "updated_at": None,
     }
+
+
+_GENERATED = {
+    "documents": [{"output_key": "out_1", "party_key": "company", "document_id": "doc-9", "position": 1}],
+    "status": "awaiting_signature",
+}
 
 
 # ── trigger / list / get ──────────────────────────────────────────────────────
@@ -269,13 +274,13 @@ def test_generate_flow_document_posts_otk_and_blob(config, vector):
     def write_router(method, url, json_body, data):
         captured["url"] = url
         captured["body"] = json_body
-        return FakeResponse(200, json_body={"document_id": "doc-9", "status": "awaiting_signature"})
+        return FakeResponse(200, json_body=_GENERATED)
 
     client, _ = _client_rw(config, _no_get, write_router)
     run = FlowRun.from_api(_run_obj(status="generating", current="n1", answers=answers,
                                     output_mode="document"))
     res = client.generate_flow_document(run)
-    assert res == {"document_id": "doc-9", "status": "awaiting_signature"}
+    assert res == _GENERATED
     assert captured["url"].endswith("/company-data/flow-runs/run-1/generate")
 
     otk = base64.b64decode(captured["body"]["otk"])
@@ -308,9 +313,14 @@ def test_process_flow_run_company_leaf_document_chains_generate(config, vector):
         if url.endswith("/company-data/flow-runs/run-1"):
             # First load = awaiting_company at n1; after generate = awaiting_signature.
             status = "awaiting_signature" if state["posts"] else "awaiting_company"
-            doc_id = "doc-9" if state["posts"] else None
             r = _run_obj(status=status, current="n1", definition=single, output_mode="document")
-            r["document_id"] = doc_id
+            r["participants"] = [{
+                "party_key": "company", "person_user_id": COMPANY_UID, "connection_id": None,
+                "documents": [{"output_key": "out_1", "name": "Contract", "document_id": "doc-9",
+                               "document_status": "ready_to_sign", "requires_signature": True,
+                               "requires_acceptance": False, "position": 1, "action": None,
+                               "acted_at": None}] if state["posts"] else [],
+            }]
             return FakeResponse(200, json_body=r)
         if url.endswith("/company-data/connections/csc-1"):
             return FakeResponse(200, json_body={"connection_id": "csc-1", "share_code": "ABC123"})
@@ -324,7 +334,7 @@ def test_process_flow_run_company_leaf_document_chains_generate(config, vector):
             r = _run_obj(status="generating", current="n1", definition=single, output_mode="document")
             return FakeResponse(200, json_body=r)
         assert url.endswith("/generate")
-        return FakeResponse(200, json_body={"document_id": "doc-9", "status": "awaiting_signature"})
+        return FakeResponse(200, json_body=_GENERATED)
 
     client, _ = _client_rw(config, get_router, write_router)
     run = client.process_flow_run("run-1", lambda node, answers: {"company_name": "ACME BV"})
@@ -332,7 +342,8 @@ def test_process_flow_run_company_leaf_document_chains_generate(config, vector):
     assert any(u.endswith("/answers") for u in state["posts"])
     assert any(u.endswith("/generate") for u in state["posts"])
     assert run.status == "awaiting_signature"
-    assert run.document_id == "doc-9"
+    assert run.participants[0].documents[0].document_id == "doc-9"
+    assert run.participants[0].documents[0].output_key == "out_1"
 
 
 def test_process_flow_run_not_our_turn_returns_untouched(config):

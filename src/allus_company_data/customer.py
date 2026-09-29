@@ -320,8 +320,9 @@ class CustomerClient:
         company's OWN copy of the answers, decrypted with the account key — every party's answers
         are sealed to every bound party, so that copy holds the whole run and no service key is
         involved — and is sealed with :func:`~allus_company_data.crypto.one_time_key_bundle`.
-        Returns the API response ``{document_id, documents, status}`` (idempotent — a repeat
-        answers the same document set).
+        Returns the API response ``{documents, status}`` — ``documents`` is one
+        ``{output_key, party_key, document_id, position}`` per produced (output document,
+        participant) (idempotent — a repeat answers the same set).
 
         Raises :class:`ConfigError` when the run's current step is not bound to this company —
         the participant the run lists on ``connection_id``.

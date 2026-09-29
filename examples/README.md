@@ -7,7 +7,7 @@ SDK call implements each scenario, across **three families**:
 | Family | Scenarios | What it demonstrates |
 |---|---|---|
 | **Identity** | *Sign in with allme* (redirect + detached), one-time claims, connect, OIDC login (via a real third-party OIDC client), 2FA guide, standalone service-2FA + enrollment | the OAuth / OIDC / 2FA surface a website uses to sign a person in |
-| **Flow** | run a contract flow end-to-end | trigger a flow run, drive the company steps with type-checked filling, hand a turn to the person's phone, read the decrypted answers, download a generated contract |
+| **Flow** | run a contract flow end-to-end | trigger a flow run, drive the company steps with type-checked filling, hand a turn to the person's phone, read the decrypted answers, download every generated output document |
 | **Company-data** | connections, request-field definitions, change-feed pump, webhook receiver, create document types (six offered, pick which to create) | the regular company-data surface a company uses to read connected people and receive updates |
 
 ~90 % of the logic is a shared frontend fetched from a pinned release; this directory
@@ -68,7 +68,7 @@ http://localhost:8091.** In detail, the launcher:
 3. downloads the **pinned** frontend release named in `frontend.lock`, **verifies its
    sha256**, and unpacks it to `.frontend/<tag>/` (a present, verified bundle is a
    cache hit — nothing is re-fetched),
-4. checks the bundle's `contract.json` version against the backend's (**contract v3**;
+4. checks the bundle's `contract.json` version against the backend's (**contract v4**;
    a mismatch is refused loudly),
 5. refuses a busy port with a clear message, then
 6. serves port `8091` on **all interfaces** (`0.0.0.0`) and prints every URL it is
@@ -178,6 +178,13 @@ publish:
 The person's turn — and the contract fixture's signature — are completed on a **phone**
 with the allme app, signed in as the connected demo person.
 
+A document leaf can produce several named **output documents** (e.g. "Contract" and
+"Addendum"). Generation answers `{"documents": [{output_key, party_key, document_id,
+position}], "status"}` — one entry per produced (output document, participant). When the run
+completes, the handler reads the company participant's `documents` off `flow_run(run_id)` and
+downloads the company's own copy of EACH output with `flow_run_document(run_id, output_key)`;
+the run result reports them as `documents: [{output_key, status, downloaded}]`.
+
 ### Webhook — set up first, tunnel optional
 
 The webhook scenario is **setup-first**: its run needs the **registered webhook id +
@@ -203,7 +210,7 @@ success to the platform worker).
 
 The frontend ships as a checksummed release asset; the ONE pin for the whole examples
 tree lives in `frontend.lock` (`{tag, sha256}`), and it pins the release carrying the
-one-portal frontend (**contract v3**). To move to a newer release: note the release
+one-portal frontend (**contract v4**). To move to a newer release: note the release
 **tag** and its `dist.tar.gz` checksum (`shasum -a 256 dist.tar.gz`) from
 `github.com/allme-sdk/example-test-suite`, set `tag` + `sha256` in `frontend.lock`,
 `rm -rf .frontend/`, then re-run — it re-fetches, verifies the checksum, and checks the

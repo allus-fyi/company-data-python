@@ -721,9 +721,10 @@ class Document:
     # content_sha256, plain_sha256, signer_first_name, signer_last_name, signer_name_verified,
     # ip, user_agent, created_at.
     signatures: list = field(default_factory=list)
-    # Present only on a contract-flow run-participant document: the run's ordered signature
-    # summary, one entry per participant owing an act — each
-    # {party_key, document_id, position, status, action, acted_at}. None on any other document.
+    # Present only on a contract-flow run-participant document: the WHOLE run's signing line,
+    # one entry per (output document, participant) in line order — each
+    # {output_key, name, party_key, document_id, position, status, action, acted_at}. Every
+    # document of the run carries the same summary. None on any other document.
     run_signatures: Optional[list] = None
     _decrypt_value: Optional[DecryptValue] = field(default=None, repr=False)
     raw: dict = field(default_factory=dict, repr=False)
@@ -796,7 +797,6 @@ class FlowRun:
     bindings: Dict[str, Any]
     status: Optional[str]
     current_node: Optional[str]
-    document_id: Optional[str]
     output_mode: Optional[str]
     definition: dict
     answers: List[dict]
@@ -852,7 +852,6 @@ class FlowRun:
             bindings=dict(obj.get("bindings") or {}),
             status=obj.get("status"),
             current_node=obj.get("current_node"),
-            document_id=obj.get("document_id"),
             output_mode=obj.get("output_mode") or (definition.get("output_mode") if isinstance(definition, dict) else None),
             definition=definition if isinstance(definition, dict) else {},
             answers=[a for a in (answers or []) if isinstance(a, dict)],
@@ -870,32 +869,29 @@ class FlowRun:
 
 
 @dataclass
-class FlowRunParticipant:
-    """One participant's row on a run's ``participants[]`` (flows.html §5a/§9 item 12) — the
-    durable participant set, additively carrying its place in the leaf PDF rule's ordered
-    signing plan. One account may hold TWO of these (two owner parties, or one customer bound
-    to two party keys) — never collapse this to a single row by user id.
+class FlowRunParticipantDocument:
+    """One of a participant's own documents on a run — one per output document the leaf
+    produced for that participant. ``position`` is the step's 1-based place in the run's ONE
+    signing line; ``None`` for a party the output's signer list does not name (its copy is
+    ``active`` from the start, owing nothing).
     """
 
-    party_key: Optional[str]
-    person_user_id: Optional[str] = None
-    connection_id: Optional[str] = None
+    output_key: Optional[str]
+    name: Optional[str] = None
     document_id: Optional[str] = None
     document_status: Optional[str] = None
     requires_signature: bool = False
     requires_acceptance: bool = False
-    # 1-based place in the signing plan; None for a party the plan does not name.
     position: Optional[int] = None
-    # 'signed' | 'accepted' | None — None until this participant's document has acted.
+    # 'signed' | 'accepted' | None — None until this document has been acted on.
     action: Optional[str] = None
     acted_at: Optional[str] = None
 
     @classmethod
-    def from_api(cls, obj: dict) -> "FlowRunParticipant":
+    def from_api(cls, obj: dict) -> "FlowRunParticipantDocument":
         return cls(
-            party_key=obj.get("party_key"),
-            person_user_id=obj.get("person_user_id"),
-            connection_id=obj.get("connection_id"),
+            output_key=obj.get("output_key"),
+            name=obj.get("name"),
             document_id=obj.get("document_id"),
             document_status=obj.get("document_status"),
             requires_signature=bool(_coerce_bool(obj.get("requires_signature"))),
@@ -903,6 +899,34 @@ class FlowRunParticipant:
             position=obj.get("position"),
             action=obj.get("action"),
             acted_at=obj.get("acted_at"),
+        )
+
+
+@dataclass
+class FlowRunParticipant:
+    """One participant's row on a run's ``participants[]`` — the durable participant set.
+    ``documents`` holds the participant's own copy of every output document the run produced,
+    ordered by signing-line position (unlisted last); empty before generation. One account may
+    hold TWO of these (two owner parties, or one customer bound to two party keys) — never
+    collapse this to a single row by user id.
+    """
+
+    party_key: Optional[str]
+    person_user_id: Optional[str] = None
+    connection_id: Optional[str] = None
+    documents: List[FlowRunParticipantDocument] = field(default_factory=list)
+
+    @classmethod
+    def from_api(cls, obj: dict) -> "FlowRunParticipant":
+        return cls(
+            party_key=obj.get("party_key"),
+            person_user_id=obj.get("person_user_id"),
+            connection_id=obj.get("connection_id"),
+            documents=[
+                FlowRunParticipantDocument.from_api(d)
+                for d in (obj.get("documents") or [])
+                if isinstance(d, dict)
+            ],
         )
 
 

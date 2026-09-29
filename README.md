@@ -855,7 +855,7 @@ with open("agreement.pdf", "rb") as fh:
 list_documents(*, person_user_id=None, status=None, limit=100, offset=0) -> list[Document]
 document(document_id)                                                     -> Document
 document_file(document_id)                                                -> bytes    # #491: the file BYTES
-flow_run_document(run_id)                                                 -> bytes    # #491: the run's OWN (service-key) copy
+flow_run_document(run_id, output_key)                                     -> bytes    # the run's OWN (service-key) copy of one output document
 update_document_status(document_id, status)                              -> Document
 update_document_metadata(document_id, *, metadata=None, name=None,
                          description=None)                               -> Document
@@ -883,8 +883,8 @@ try:
 except ApiError as e:
     if e.error_key == "documents.recipient_encrypted":
         # This is a per-person document; only the recipient can read it. For a
-        # generated flow contract, download the company's OWN copy instead:
-        pdf_bytes = client.flow_run_document(run.id)
+        # generated flow document, download the company's OWN copy of that output instead:
+        pdf_bytes = client.flow_run_document(run.id, "out_1")
     else:
         raise
 
@@ -902,12 +902,14 @@ signatures` (and `.raw`). Use `.json()` on a `payload_kind="json"` document to
 get the decrypted plaintext object.
 
 A contract-flow-generated document can also read `status="waiting"` — a run-participant
-copy whose signer has not been reached yet in the run's ordered signing plan. It is
+copy whose signer has not been reached yet in the run's signing line. It is
 read-only: `update_document_status` raises with `error_key="documents.run_managed"`
 (409) if you try to write `status` on a run-participant document while it is `waiting`,
 `ready_to_sign` or `offering` — that status moves only through flow generation, the
 run's own advance, sign/accept, or a run cancel/decline. Such a document's
-`run_signatures` carries the run's ordered signature summary.
+`run_signatures` carries the WHOLE run's signing line — one entry per (output document,
+participant), in line order, each `{output_key, name, party_key, document_id, position,
+status, action, acted_at}`; every document of the run carries the same summary.
 
 ### The document seal
 
@@ -1041,7 +1043,9 @@ identity()                                                    -> dict           
 * `trigger_flow_run(flow_id, connection_id=..., bindings={...})` starts a run bound to a connection and the flow's other parties, pinning the flow's latest **published** version.
 * `flow_runs(status=...)` / `flow_run(run_id)` list / fetch runs. `status=None` returns everything; the default `"awaiting_company"` is the actionable queue.
 * `flow_run_answers(run)` (#491 gap 1) — a run's **decrypted** answers as `{slug: plaintext}`, reading the company's service-key answer copies. Accepts a loaded `FlowRun` or a run id (fetched via `flow_run`).
-* `submit_flow_answers` / `generate_flow_document` / `process_flow_run` fill the company's current node, advance the run (encrypting one answer copy per bound party), and — at a document-mode leaf — generate the contract. See the method docstrings for the full per-party encryption details.
+* `submit_flow_answers` / `generate_flow_document` / `process_flow_run` fill the company's current node, advance the run (encrypting one answer copy per bound party), and — at a document-mode leaf — generate its output documents. See the method docstrings for the full per-party encryption details.
+* `generate_flow_document(run)` returns `{"documents": [...], "status": ...}` — one `{output_key, party_key, document_id, position}` per produced (output document, participant). A leaf can produce several named output documents (e.g. "Contract" and "Addendum"); `position` is the step's 1-based place in the run's ONE signing line (one signer at a time, across every output), `None` for a party an output's signer list does not name. A repeat answers the same set.
+* A `FlowRun`'s `participants` are `FlowRunParticipant(party_key, person_user_id, connection_id, documents)`; `documents` is that participant's own copy of each output document — `FlowRunParticipantDocument(output_key, name, document_id, document_status, requires_signature, requires_acceptance, position, action, acted_at)`, ordered by line position.
 * `identity()` (#491 gap 3) — this client's own `{"company_user_id": ..., "service_id": ...}` from `GET /api/company-data/whoami`. `trigger_flow_run`'s company-side binding must use `company_user_id` (the person party's user_id comes from the connection) — without this call it was unconstructible through the SDK.
 
 **The party that answers a run's last step generates the contract — the customer role included.**
@@ -1054,8 +1058,9 @@ customer.generate_flow_document(connection_id, run)   -> dict   # POST /api/comp
 
 Pass the run as re-read after your leaf submit. The answer map comes from your OWN copy of the run's
 answers, decrypted with the account key — every party's answers are sealed to every bound party, so
-that copy holds the whole run and no service key is involved. Returns `{document_id, documents,
-status}`; a repeat answers the same document set. Raises `ConfigError` when the run's current step is
+that copy holds the whole run and no service key is involved. Returns `{documents, status}` — one
+`{output_key, party_key, document_id, position}` per produced (output document, participant); a repeat
+answers the same set. Raises `ConfigError` when the run's current step is
 not bound to your company.
 
 ```python
@@ -1068,12 +1073,15 @@ run = client.trigger_flow_run(
 # Later, once the run is complete:
 answers = client.flow_run_answers(run.id)     # {slug: plaintext} — the company's copies
 
-# If the flow's output_mode is "document", download the company's OWN generated
-# copy (encrypted to the SERVICE key, unlike a per-person document_file()):
-pdf_bytes = client.flow_run_document(run.id)  # see Company documents above
+# If the flow's output_mode is "document", download the company's OWN copy of every
+# output document (encrypted to the SERVICE key, unlike a per-person document_file()):
+run = client.flow_run(run.id)
+own = next(p for p in run.participants if p.party_key == run.company_party_key)
+for doc in own.documents:
+    pdf_bytes = client.flow_run_document(run.id, doc.output_key)  # see Company documents above
 ```
 
-* **Raises:** `AuthError`, `ApiError` (404 on `flow_run`/`flow_run_document` for an unknown run, or one with no generated document yet), `DecryptError`, `RateLimitError`, `ValidationError` (from `submit_flow_answers` on a slug failing field-type validation, or a value outside its field's minimum/maximum).
+* **Raises:** `AuthError`, `ApiError` (404 on `flow_run`/`flow_run_document` for an unknown run — `flows.run_not_found` — or, on `flow_run_document`, an output the run did not produce or a company that is not a bound party — `flows.no_document`), `DecryptError`, `RateLimitError`, `ValidationError` (from `submit_flow_answers` on a slug failing field-type validation, or a value outside its field's minimum/maximum).
 
 ### Plugin fields on a flow step
 

@@ -1,4 +1,4 @@
-"""The single demo-backend server (contract v3) for the Python SDK example suite.
+"""The single demo-backend server (contract v4) for the Python SDK example suite.
 
 ONE server serves the static portal bundle + the whole contract API + the public
 ``POST /webhook`` (company-data) + ``GET /callback`` (identity) on ONE port. This
@@ -24,7 +24,7 @@ from .runtime import Runtime
 
 # The single implemented contract version. The startup guard refuses a bundle whose
 # contract.json version differs.
-CONTRACT_VERSION = 3
+CONTRACT_VERSION = 4
 SDK = "python"
 
 _INT_ID_RE = re.compile(r"^\d+$")

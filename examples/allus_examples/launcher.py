@@ -1,4 +1,4 @@
-"""Serve the whole example suite (contract v3) under a single-worker stdlib server.
+"""Serve the whole example suite (contract v4) under a single-worker stdlib server.
 
 ONE server, ONE port, all three scenario families. Runs INSIDE the example's venv
 (deps installed), so ``allus_company_data`` + ``authlib`` import cleanly. Steps:

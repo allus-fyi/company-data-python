@@ -77,14 +77,14 @@ CALL_FLOW_RUN = "Client.flow_run — re-read on every poll to see whose turn the
 CALL_PROCESS = (
     "Client.process_flow_run — drives ONE company step: decrypts the answers so far, fills the "
     "node, type-checks the values, encrypts a copy per party, submits — and generates the "
-    "document when the submit lands on a document-mode leaf"
+    "output documents when the submit lands on a document-mode leaf"
 )
 CALL_ANSWERS = (
     "Client.flow_run_answers — the completed run's answers, decrypted with the service key"
 )
 CALL_DOCUMENT = (
-    "Client.flow_run_document — downloads the company's own copy of the generated contract and "
-    "decrypts it with the service key"
+    "Client.flow_run_document — downloads the company's own copy of output document "
+    "{output_key} and decrypts it with the service key"
 )
 
 
@@ -376,8 +376,8 @@ class FlowHandlers:
         self, run: Dict[str, Any], client: Client, flow_run: Any, flow_run_id: str
     ) -> Dict[str, Any]:
         """Terminal: fetch the decrypted answers and, for a document-mode run, download
-        the generated contract's company copy (the run-scoped, service-key-decryptable
-        surface)."""
+        the company's copy of EVERY output document the run produced (the run-scoped,
+        service-key-decryptable surface)."""
         run["calls"] = add_call(run.get("calls", []), CALL_ANSWERS)
         answers = client.flow_run_answers(flow_run)
         ciphers = _own_cipher_by_slug(flow_run)
@@ -387,13 +387,24 @@ class FlowHandlers:
         ]
 
         if flow_run.output_mode == "document":
-            try:
-                run["calls"] = add_call(run.get("calls", []), CALL_DOCUMENT)
-                data = client.flow_run_document(flow_run_id)
-                run["document"] = {"status": "downloaded", "downloaded": True, "bytes": len(data)}
-            except ApiError as exc:
-                # The run completed but the document is not retrievable yet — report, don't fail.
-                run["document"] = {"status": "unavailable", "downloaded": False, "error": str(exc)}
+            documents: List[Dict[str, Any]] = []
+            for output_key in _company_output_keys(flow_run):
+                try:
+                    run["calls"] = add_call(
+                        run.get("calls", []), CALL_DOCUMENT.format(output_key=output_key)
+                    )
+                    data = client.flow_run_document(flow_run_id, output_key)
+                    documents.append({
+                        "output_key": output_key, "status": "downloaded", "downloaded": True,
+                        "bytes": len(data),
+                    })
+                except ApiError as exc:
+                    # The run completed but this output is not retrievable — report, don't fail.
+                    documents.append({
+                        "output_key": output_key, "status": "unavailable", "downloaded": False,
+                        "error": str(exc),
+                    })
+            run["documents"] = documents
 
         run["status"] = "completed"
         run["completed"] = True
@@ -403,7 +414,7 @@ class FlowHandlers:
         """The GET /api/runs/{runId} response: the SHARED run envelope (outer
         {status:"pending"|"done"|"failed", result?, error?, calls}) with the pinned
         FLOW shape nested under ``result`` ({status:"running"|"waiting_person"|
-        "completed", steps, answers?, document?}). The shared frontend reads progress
+        "completed", steps, answers?, documents?}). The shared frontend reads progress
         ONLY from ``run.result`` and keeps polling ONLY while the outer status is
         "pending", so the inner flow status must NOT sit at the top level — it drives
         under "pending" until the platform run completes ("done") or errors
@@ -417,8 +428,8 @@ class FlowHandlers:
         }
         if "answers" in run:
             result["answers"] = run["answers"]
-        if "document" in run:
-            result["document"] = run["document"]
+        if "documents" in run:
+            result["documents"] = run["documents"]
 
         out: Dict[str, Any] = {
             "status": outer,
@@ -482,6 +493,20 @@ def _own_cipher_by_slug(flow_run: Any) -> Dict[str, Any]:
         if isinstance(slug, str) and row.get("for_user_id") == service_uid:
             out[slug] = row.get("value")
     return out
+
+
+def _company_output_keys(flow_run: Any) -> List[str]:
+    """The output keys of the documents the run produced for the company, in signing-line order,
+    each once — read off every participant row bound to the company's own user id (a company can
+    hold more than one party of a run, and each such row carries a copy of every output)."""
+    keys: List[str] = []
+    for participant in flow_run.participants:
+        if participant.person_user_id != flow_run.company_user_id:
+            continue
+        for doc in participant.documents:
+            if doc.output_key and doc.output_key not in keys:
+                keys.append(doc.output_key)
+    return keys
 
 
 def _canned_value(ftype: str) -> str:

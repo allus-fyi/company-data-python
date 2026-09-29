@@ -813,7 +813,7 @@ class Client:
           served as ``{"encrypted":true,"value":{"_enc":1,...}}`` — the company
           CANNOT decrypt that with its service key, so this fails clearly
           (``ApiError`` ``documents.recipient_encrypted``) rather than attempting a
-          doomed service-key decrypt. For a generated flow contract's OWN copy the
+          doomed service-key decrypt. For a generated flow document's OWN copy the
           company uses :meth:`flow_run_document` — that copy IS service-key-encrypted.
         """
         raw = self._http.get_raw(f"{_DOCUMENTS}/{document_id}/file")
@@ -826,8 +826,8 @@ class Client:
                 0,
                 "documents.recipient_encrypted",
                 "This document is encrypted to its recipient and is not readable with the "
-                "company service key. For a generated flow contract, use "
-                "flow_run_document(run_id) to download the company copy.",
+                "company service key. For a generated flow document, use "
+                "flow_run_document(run_id, output_key) to download the company copy.",
             )
         return raw  # broadcast / plaintext bytes
 
@@ -1022,17 +1022,20 @@ class Client:
         flow_run = run if isinstance(run, FlowRun) else self.flow_run(run)
         return self._decrypt_run_answers(flow_run)
 
-    def flow_run_document(self, run_id: str) -> bytes:
-        """Download the company's OWN copy of a run's generated flow
-        contract — the PLAINTEXT file bytes. GETs ``/flow-runs/{run_id}/document/file``,
-        which serves the company-party copy encrypted to the SERVICE key (unlike
-        :meth:`document_file`'s recipient-targeted copy), so the same
-        :class:`~allus_company_data.crypto.BinaryHandle` the slot-file download uses
-        decrypts it → the ``{"file":"data:…;base64,…"}`` envelope → the file bytes.
-        404 (``ApiError``) when the run has not generated a document yet.
+    def flow_run_document(self, run_id: str, output_key: str) -> bytes:
+        """Download the company's OWN copy of one output document a run generated — the
+        PLAINTEXT file bytes. ``output_key`` names the output document (the ``output_key`` of
+        an entry in the company participant's ``documents``, or of the generate response's
+        ``documents``). GETs ``/flow-runs/{run_id}/documents/{output_key}/file``, which serves
+        the company-party copy encrypted to the SERVICE key (unlike :meth:`document_file`'s
+        recipient-targeted copy), so the same :class:`~allus_company_data.crypto.BinaryHandle`
+        the slot-file download uses decrypts it → the ``{"file":"data:…;base64,…"}`` envelope →
+        the file bytes. 404 (``ApiError``) ``flows.run_not_found`` for an unknown run, and
+        ``flows.no_document`` when that output was not produced or the company is not a bound
+        party.
         """
         return BinaryHandle(
-            value_url=f"{_FLOW_RUNS}/{run_id}/document/file",
+            value_url=f"{_FLOW_RUNS}/{run_id}/documents/{output_key}/file",
             fetch=self._binary_fetch,
             decrypt=self._decrypt_value,
         ).bytes()
@@ -1269,8 +1272,10 @@ class Client:
         """Document-mode company leaf: one-time-key value gather → POST /generate.
 
         Seals the company's decrypted answers with :func:`one_time_key_bundle` and POSTs
-        ``{otk, values}``. Returns the API response ``{document_id, documents, status}``
-        (idempotent — a repeat answers the same document set).
+        ``{otk, values}``. Returns the API response ``{documents, status}`` — ``documents``
+        is one ``{output_key, party_key, document_id, position}`` per produced (output
+        document, participant), ``position`` the step's 1-based place in the run's signing
+        line or ``None`` for an unlisted party (idempotent — a repeat answers the same set).
         """
         body = one_time_key_bundle(self._decrypt_run_answers(run))
         return self._http.post(f"{_FLOW_RUNS}/{run.id}/generate", json_body=body)
@@ -1288,7 +1293,8 @@ class Client:
         current node (``node`` is the pinned-graph node dict, ``answers`` the
         decrypted ``{slug: value}`` so far). The SDK encrypts per party, submits,
         and — if the submit landed on a document-mode leaf — calls
-        :meth:`generate_flow_document`. Returns the latest :class:`FlowRun`; when
+        :meth:`generate_flow_document`. Returns the latest :class:`FlowRun` — after a
+        generate, each participant's produced documents are on its ``documents``; when
         the run is not awaiting the company it is returned untouched.
         """
         run = self.flow_run(run_id)
