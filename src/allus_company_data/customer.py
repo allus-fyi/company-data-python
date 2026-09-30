@@ -310,7 +310,11 @@ class CustomerClient:
         )
 
     def decline_flow_run(self, connection_id: str, run_id: str) -> Any:
-        """Decline a flow run (``POST .../flow-runs/{runId}/decline``)."""
+        """Decline a flow run (``POST .../flow-runs/{runId}/decline``), cancelling it for every party.
+
+        Accepted only on your own turn: your answer turn or your own open signing step. Any other
+        time the API refuses it with ``error_key`` ``flows.not_your_turn`` (403).
+        """
         return self._http.post(f"{_CONN}/{connection_id}/flow-runs/{run_id}/decline")
 
     def generate_flow_document(self, connection_id: str, run: FlowRun) -> Any:
