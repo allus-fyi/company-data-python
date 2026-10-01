@@ -66,6 +66,12 @@ class ApiError(Exception):
     one and still prove what it holds. Generic rather than a bespoke subclass — every
     error body's extra fields become reachable, and no future one needs a new
     exception type to be readable.
+
+    A 503 ``db.writes_paused`` means saving is paused (the platform cannot
+    complete a save in every region). Nothing was written, so the call is safe to
+    repeat; the response's ``Retry-After`` is 30 seconds. Any call that is not a
+    GET, the change-feed drains and ``OAuthClient.poll_result`` can raise it; the
+    token request cannot. The SDK does not retry it.
     """
 
     def __init__(

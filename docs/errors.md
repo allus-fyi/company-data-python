@@ -45,6 +45,39 @@ except ApiError as e:
 
 A **421 `region.rebase_required`** never reaches you when the platform is reachable: it is the global front door telling the SDK to send the call to the caller's home region, which the SDK does automatically (README, **How it's wired** → Regions). It surfaces as `ApiError` only when the base the refusal names is absent or empty — in which case no base was stored and no retry was made.
 
+## 503 `db.writes_paused` — saving is paused, retry
+
+While the platform cannot complete a save in every region, a call can answer
+**503** with `error_key` **`db.writes_paused`** (`"Saving data is not possible
+right now"`) and the header `Retry-After: 30`. **Nothing was written**, so the call
+is safe to repeat exactly as it was. Reads keep working.
+
+It surfaces as a plain `ApiError` (`status == 503`, `error_key ==
+"db.writes_paused"`); the SDK does not retry it. `ApiError` does not carry the
+`Retry-After` header: wait 30 seconds, then repeat the same call.
+
+Where it can come from:
+
+* every company-data and customer call that is not a GET — creating, updating or
+  deleting documents, flow-run starts, answers, uploads and generation, consent
+  answers, connect requests, messages, 2FA challenges, `/api/keys/batch`;
+* the change-feed drains `GET /api/company-data/changes` and
+  `GET /api/customer/changes` (`process_changes`, `drain_batch`): nothing was
+  drained, the events stay queued on the server and arrive on a later run, and the
+  local buffer is untouched;
+* `OAuthClient.poll_result` (`POST /oauth2/result`): the result is not consumed;
+  poll again.
+
+The token request (`POST /oauth2/token`) does not answer it: token grants keep
+working while saving is paused.
+
+```python
+except ApiError as e:
+    if e.status == 503 and e.error_key == "db.writes_paused":
+        time.sleep(30)
+        ...  # repeat the same call
+```
+
 ## `RateLimitError`
 
 ```python
