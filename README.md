@@ -1031,7 +1031,7 @@ finishing at a document-generating leaf. These calls cover the company's turn:
 
 ```python
 trigger_flow_run(flow_id, *, connection_id, bindings, source_files=None) -> FlowRun
-stage_run_file(flow_id, sealed_value)                      -> str      # staged file name
+stage_run_file(flow_id, source_user_id, sealed_value)      -> str      # staged file name
 upload_answer_file(run_id, slug, for_user_id, sealed_value) -> str     # answer file name
 flow_run_source_file(run_id, source_key)                   -> dict     # the sealed wrapper
 published_flow(flow_id)                                    -> PublishedFlow
@@ -1061,10 +1061,15 @@ whose source the run does not hold does not match; the next rule is tried.
 * **Connection sources are copied at run start.** For every answered `pdf_document` request slot a
   rule of the pinned version names, the caller reads the customer's shared file, seals its envelope
   JSON once per distinct bound user (the company's own copy to the service key) and stages each with
-  `stage_run_file(flow_id, sealed_value)` (`POST /api/company-data/flows/{flowId}/run-files`), then
-  passes `source_files=[{"source_key", "for_user_id", "file"}]` to `trigger_flow_run`. A list that is
-  not exactly the required set is refused with `ApiError` `flows.source_files_invalid`; its `details`
-  carry `missing` (`[{source_key, for_user_id}]`) and `unexpected` (`[file]`), and nothing is written.
+  `stage_run_file(flow_id, source_user_id, sealed_value)` (`POST /api/company-data/flows/{flowId}/run-files`)
+  — `source_user_id` the customer bound to the source's party, whose shared PDF the copy is; the copy
+  is stored in that customer's home region — then passes
+  `source_files=[{"source_key", "for_user_id", "file"}]` to `trigger_flow_run`. A list that is not
+  exactly the required set, or whose copy was staged for another customer than the one bound to its
+  source's party, is refused with `ApiError` `flows.source_files_invalid`; its `details` carry
+  `missing` (`[{source_key, for_user_id, source_user_id}]`) and `unexpected` (`[file]`), and nothing
+  is written. Staging a copy for a customer that is not connected to the service is refused
+  `flows.source_user_invalid`.
 * `FlowRun.source_files` is the company's own copies, `{source_key: file}` (`{}` when none).
   `flow_run_source_file(run_id, source_key)` returns the stored copy — a wrapper that opens with the
   service key (`GET /api/company-data/flow-runs/{runId}/source-files/{sourceKey}`).

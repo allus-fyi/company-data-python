@@ -188,7 +188,8 @@ the run result reports them as `documents: [{output_key, status, downloaded}]`.
 When a leaf's rule takes its PDF from a participant — a `pdf_document` flow field, or a file a
 customer shared on its connection — `process_flow_run` uploads the company's own copy of each held
 source as a generation input before it generates; the handler needs no extra call. A flow with a
-connection source needs its copies staged at start (`stage_run_file` + `source_files` on
+connection source needs its copies staged at start (`stage_run_file(flow_id, source_user_id,
+sealed_value)`, `source_user_id` the customer whose shared PDF the copy is, + `source_files` on
 `trigger_flow_run`), which the two fixtures do not use.
 
 ### Webhook — set up first, tunnel optional

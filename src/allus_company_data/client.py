@@ -1013,7 +1013,9 @@ class Client:
         a rule of the pinned version names, per distinct bound user — the company's own copy
         sealed to the service key. A start whose list is not exactly that set is refused with
         :class:`ApiError` ``flows.source_files_invalid``, whose ``details`` carry ``missing``
-        (``[{source_key, for_user_id}]``) and ``unexpected`` (``[file]``); nothing is written.
+        (``[{source_key, for_user_id, source_user_id}]`` — ``source_user_id`` the customer bound to
+        the source's party, whose shared file each copy is) and ``unexpected`` (``[file]``); nothing
+        is written.
 
         Reads the flow's latest published version (:meth:`published_flow`) and pins it with
         ``flow_version``. When that version's text elements show the connected customer's shared
@@ -1108,16 +1110,22 @@ class Client:
         customer_key = self._recipient_public_key(share_code)
         return {"company": recipient(self._service_public_key()), user_id: recipient(customer_key)}, share_code
 
-    def stage_run_file(self, flow_id: str, sealed_value: Any) -> str:
+    def stage_run_file(self, flow_id: str, source_user_id: str, sealed_value: Any) -> str:
         """Stage one sealed copy of a connection source for a run start → its ``file``.
 
-        ``POST /api/company-data/flows/{flow_id}/run-files`` with ``{value}``: ``sealed_value``
-        is the source's envelope JSON sealed to ONE bound user (a ``{"_enc":1,…}`` wrapper, as a
-        dict or its JSON string). Name the returned file in :meth:`trigger_flow_run`'s
-        ``source_files``. An over-budget value is refused ``documents.too_large``.
+        ``POST /api/company-data/flows/{flow_id}/run-files`` with ``{source_user_id, value}``:
+        ``source_user_id`` is the connected customer whose shared PDF this copies (the
+        ``source_user_id`` a refused start's ``missing`` entry names — the user bound to the
+        source's party); the copy is stored in that customer's home region. ``sealed_value`` is
+        the source's envelope JSON sealed to ONE bound user (a ``{"_enc":1,…}`` wrapper, as a dict
+        or its JSON string). Name the returned file in :meth:`trigger_flow_run`'s
+        ``source_files``; the start accepts it only for a source whose party is bound to
+        ``source_user_id``. A customer that is not connected to the service is refused
+        ``flows.source_user_invalid``, an over-budget value ``documents.too_large``.
         """
         body = self._http.post(
-            f"{_FLOWS}/{flow_id}/run-files", json_body={"value": _sealed_string(sealed_value)}
+            f"{_FLOWS}/{flow_id}/run-files",
+            json_body={"source_user_id": source_user_id, "value": _sealed_string(sealed_value)},
         )
         return _response_file(body)
 
