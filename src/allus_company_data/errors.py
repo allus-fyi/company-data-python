@@ -72,6 +72,12 @@ class ApiError(Exception):
     repeat; the response's ``Retry-After`` is 30 seconds. Any call that is not a
     GET, the change-feed drains and ``OAuthClient.poll_result`` can raise it; the
     token request cannot. The SDK does not retry it.
+
+    A 503 ``platform.out_of_order`` means the region serving the call is being
+    rebuilt. The request was not processed, so the call is safe to repeat; the
+    response's ``Retry-After`` is 300 seconds. Any call can raise it, reads and
+    the change-feed drains included, except the ``client_credentials`` token
+    request. The SDK does not retry it.
     """
 
     def __init__(
