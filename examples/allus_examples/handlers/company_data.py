@@ -56,7 +56,7 @@ PUMP_SCENARIOS = (CHANGES, WEBHOOK)
 DEFAULT_API_URL = "https://api.allme.fyi"
 
 # The webhook change-feed fallback runs one drain_batch() per poll; a small network
-# timeout on its SDK session keeps a blackholed feed from pinning the single worker.
+# timeout on its SDK session keeps a blackholed feed from pinning serialized dispatch.
 FEED_TIMEOUT_S = 3.0
 
 # ── the "what just happened" trace ────────────────────────────────────────────
@@ -334,7 +334,7 @@ class CompanyDataHandlers:
     def _start_webhook(self) -> Response:
         """Start the single accumulating webhook run. Persists the routing record
         webhookId -> runId (superseding any prior active webhook run) and returns
-        {action:{type:"none"}} — there is NO long-poll (it would wedge the single worker).
+        {action:{type:"none"}} — there is NO long-poll (it would wedge serialized dispatch).
         Events arrive via POST /webhook and via a per-poll drain_batch() feed fallback."""
         webhook_id = str(self.rt.read_config_meta(WEBHOOK).get("webhook_id") or "")
         if not webhook_id:
@@ -452,7 +452,7 @@ class CompanyDataHandlers:
 
     def _webhook_client(self) -> Client:
         """The webhook scenario's Client, built from its config file with a network-timeout
-        session so the per-poll drain_batch() fallback can never pin the single worker."""
+        session so the per-poll drain_batch() fallback can never pin serialized dispatch."""
         cfg = Config.from_file(self.rt.config_path_for(WEBHOOK))
         return Client(cfg, http=HttpClient(cfg, session=TimeoutSession(FEED_TIMEOUT_S)))
 

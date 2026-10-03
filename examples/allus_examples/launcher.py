@@ -1,4 +1,4 @@
-"""Serve the whole example suite (contract v4) under a single-worker stdlib server.
+"""Serve the whole example suite (contract v4) with serialized request dispatch.
 
 ONE server, ONE port, all three scenario families. Runs INSIDE the example's venv
 (deps installed), so ``allus_company_data`` + ``authlib`` import cleanly. Steps:
@@ -10,8 +10,9 @@ ONE server, ONE port, all three scenario families. Runs INSIDE the example's ven
 3. assert the bundle's ``contract.json`` version == the backend's implemented
    contractVersion — refuse loudly on a mismatch or checksum failure,
 4. refuse a busy port with a clear message,
-5. serve with ``http.server.HTTPServer`` — ONE worker (serves one request at a time;
-   no threading), so requests serialize (incl. the public POST /webhook) — bound to
+5. serve with ``http.server.ThreadingHTTPServer`` — one thread per connection, so an idle
+   keep-alive connection never blocks another client, while ONE lock around request
+   dispatch keeps requests serialized (incl. the public POST /webhook) — bound to
    ALL interfaces (``0.0.0.0``) so a phone on the same network can reach it, printing
    every URL it is reachable on.
 """
@@ -27,8 +28,9 @@ import shutil
 import socket
 import sys
 import tarfile
+import threading
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .common import failure_response
 from .runtime import Runtime
@@ -137,6 +139,10 @@ def _contract_guard(frontend: str) -> None:
 
 
 def _make_handler(server: Server):
+    # Connections are served on their own threads, but dispatch is single-file: the handlers and
+    # the ``.runtime/`` state they share are written for one request at a time.
+    dispatch_lock = threading.Lock()
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -152,7 +158,8 @@ def _make_handler(server: Server):
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length) if length else b""
                 headers = {k: v for k, v in self.headers.items()}
-                resp = server.dispatch(self.command, self.path, body, headers)
+                with dispatch_lock:
+                    resp = server.dispatch(self.command, self.path, body, headers)
             except Exception as exc:  # noqa: BLE001 — outermost guard; nothing above answers
                 resp = failure_response(exc)
             # A client that aborts or supersedes an in-flight request (the frontend's poll fetch is
@@ -210,7 +217,7 @@ def main() -> None:
     rt = Runtime(BASE_DIR)
     srv = Server(rt, frontend, _sdk_version())
     # ALL interfaces, so a phone on the same network can reach it.
-    httpd = HTTPServer(("0.0.0.0", port), _make_handler(srv))
+    httpd = ThreadingHTTPServer(("0.0.0.0", port), _make_handler(srv))
     _print_reachable_urls(port)
     try:
         httpd.serve_forever()

@@ -13,8 +13,8 @@ SDK call implements each scenario, across **three families**:
 ~90 % of the logic is a shared frontend fetched from a pinned release; this directory
 is the thin Python backend. Everything the handlers do goes through the SDK's
 **intended top-level surface** — never internals, never raw platform HTTP. This is a
-**demo**, not a production service: disposable local state under `.runtime/`, a
-single-worker stdlib server, no hardening beyond ordinary localhost developer use.
+**demo**, not a production service: disposable local state under `.runtime/`,
+serialized request dispatch, no hardening beyond ordinary localhost developer use.
 
 ---
 
@@ -72,9 +72,9 @@ http://localhost:8091.** In detail, the launcher:
    a mismatch is refused loudly),
 5. refuses a busy port with a clear message, then
 6. serves port `8091` on **all interfaces** (`0.0.0.0`) and prints every URL it is
-   reachable on, with a **single-worker** `http.server` — one request
-   at a time (requests serialize, so there are no locks), including the public
-   `POST /webhook`.
+   reachable on, with one thread per connection so an idle keep-alive connection
+   cannot block another client; one dispatch lock keeps requests serialized,
+   including the public `POST /webhook`.
 
 Open **http://localhost:8091** and pick a scenario.
 

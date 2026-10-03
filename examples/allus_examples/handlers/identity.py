@@ -53,7 +53,7 @@ CLAIM_VALUE_SCENARIOS = (3, 4, 5)
 
 DEFAULT_API_URL = "https://api.allme.fyi"
 
-# The short-cycled polls must not pin the single worker on a blackholed request for
+# The short-cycled polls must not pin serialized dispatch on a blackholed request for
 # the transport's default (unbounded) wait, so their HTTP session carries a 2s
 # network timeout. The SDK's poll helpers separately bound their LOGICAL loop.
 POLL_TIMEOUT_S = 2.0

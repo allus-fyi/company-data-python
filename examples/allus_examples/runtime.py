@@ -1,9 +1,10 @@
 """Cross-request state for the single-server example suite (config-file model).
 
 ONE ``.runtime/`` tree backs all three scenario families (identity, flow,
-company-data) — the single-worker server serialises every request, so there is NO
-concurrency to guard: NO locks, NO tombstones, NO burn-on-read. Everything lives
-under ``.runtime/`` (git-ignored, wiped at startup):
+company-data). Connections run on separate threads, while the launcher's dispatch
+lock serialises every request, so this module needs no additional locks, tombstones
+or burn-on-read machinery. Everything lives under ``.runtime/`` (git-ignored,
+wiped at startup):
 
 * ``config/{key}.json``      - the canonical SDK config file a scenario runs OFF
   (written by ``POST /api/scenarios/{id}/config`` from the browser settings; NOT

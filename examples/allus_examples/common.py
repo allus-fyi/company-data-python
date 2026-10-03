@@ -4,7 +4,7 @@ The pieces every family's handlers need but that are NOT the SDK example itself:
 the tiny :class:`Response` value, the JSON/text/redirect response builders, the
 request-body / query helpers, a static-file MIME map, and the network-timeout
 ``requests.Session`` the short-cycled polls inject into the SDK so one blackholed
-request cannot pin the single worker. Kept deliberately small — the teaching
+request cannot pin serialized dispatch. Kept deliberately small — the teaching
 material is the per-family handler files, not this scaffolding.
 """
 
@@ -28,7 +28,7 @@ class Response:
 class TimeoutSession(requests.Session):
     """A ``requests.Session`` that applies a default network timeout to every call —
     injected into the SDK clients used by the short-cycled polls / webhook feed
-    fallback so one blackholed request cannot pin the single-worker server."""
+    fallback so one blackholed request cannot pin serialized dispatch."""
 
     def __init__(self, timeout: float) -> None:
         super().__init__()

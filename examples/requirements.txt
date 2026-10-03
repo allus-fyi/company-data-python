@@ -14,7 +14,7 @@
 #     needs. Declared here only; never a dependency of the published SDK.
 #   - requests: the examples inject a small network-timeout Session into the SDK's
 #     HttpClient (short-cycled polls + the webhook change-feed fallback) so one
-#     blackholed request cannot pin the single-worker server (requests is already an
+#     blackholed request cannot pin serialized request dispatch (requests is already an
 #     SDK dependency; pinned here so the example is self-describing).
 authlib>=1.3
 requests>=2.31
