@@ -55,6 +55,10 @@ _REGION_BASE_MEMBER = "api_url"
 # The front door's refusal of a data route: rebase to the named base and replay.
 _REBASE_ERROR_KEY = "region.rebase_required"
 
+# Seconds one request of a session this SDK created waits for the platform's answer (the
+# ``requests`` read timeout). A session passed in keeps its own limit.
+REQUEST_TIMEOUT = 45
+
 
 class HttpClient:
     """Authenticated JSON/XML transport for the company-data API."""
@@ -72,6 +76,9 @@ class HttpClient:
         # An injectable session keeps the client unit-testable without the live
         # API (the tests pass a fake session); otherwise a real requests.Session.
         self._session = session if session is not None else requests.Session()
+        # The extra arguments of every request: the SDK's timeout for its own session, none for one
+        # passed in, whose own default then applies.
+        self._request_kwargs: dict = {} if session is not None else {"timeout": REQUEST_TIMEOUT}
         self._sleep = sleep
         self._clock = clock
         self._max_retries_429 = max_retries_429
@@ -108,6 +115,7 @@ class HttpClient:
                 url,
                 data=data,
                 headers={"Accept": "application/json"},
+                **self._request_kwargs,
             )
         except requests.RequestException as exc:  # network failure
             raise AuthError(f"token request failed: {exc}") from exc
@@ -266,7 +274,12 @@ class HttpClient:
                 body_kwargs["json"] = json_body
             try:
                 resp = self._session.request(
-                    method, url, params=params, headers=headers, **body_kwargs
+                    method,
+                    url,
+                    params=params,
+                    headers=headers,
+                    **body_kwargs,
+                    **self._request_kwargs,
                 )
             except requests.RequestException as exc:
                 raise ApiError(0, None, f"request to {path} failed: {exc}") from exc

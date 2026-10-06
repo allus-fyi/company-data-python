@@ -1281,6 +1281,12 @@ except ApiError as e:
     log(e.status, e.error_key, e.message)
 ```
 
+**One request waits 45 seconds for the platform's answer.** The SDK's own
+transport — for `Client`, `CustomerClient` and `OAuthClient` alike — waits 45
+seconds for the platform's answer to one request, and the call then fails as it
+does when the connection drops; a `requests.Session` you pass in keeps its own
+limit. A request given up may still have completed on the platform.
+
 **503 `db.writes_paused` — saving is paused, retry.** While the platform cannot
 complete a save in every region, any call that is not a GET, the change-feed
 drains (`process_changes`, `drain_batch`) and `OAuthClient.poll_result` can answer

@@ -27,6 +27,7 @@ import requests
 from .config import Config
 from .crypto import decrypt, hash_matches, load_private_key
 from .errors import ApiError, AuthError, ConfigError
+from .http import REQUEST_TIMEOUT
 from .models import PluginValue, expiry_passed
 
 # The hosted consent surface. The native apps claim this https link (universal/app
@@ -152,6 +153,9 @@ class OAuthClient:
             raise ConfigError("OAuthClient requires oauth_client_id + oauth_redirect_uri (idw role)")
         self._config = config
         self._session = session if session is not None else requests.Session()
+        # The extra arguments of every request: the SDK's timeout for its own session, none for one
+        # passed in, whose own default then applies.
+        self._request_kwargs: dict = {} if session is not None else {"timeout": REQUEST_TIMEOUT}
         self._api_url = config.api_url.rstrip("/")
         self._authorize_url = authorize_url
         self._sleep = sleep
@@ -277,7 +281,9 @@ class OAuthClient:
         url = f"{self._api_url}/api/oauth/userinfo"
         try:
             resp = self._session.get(
-                url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+                url,
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                **self._request_kwargs,
             )
         except requests.RequestException as exc:
             raise ApiError(0, None, f"userinfo request failed: {exc}") from exc
@@ -426,7 +432,9 @@ class OAuthClient:
         deadline = time.monotonic() + timeout
         while True:
             try:
-                resp = self._session.post(url, data=data, headers={"Accept": "application/json"})
+                resp = self._session.post(
+                    url, data=data, headers={"Accept": "application/json"}, **self._request_kwargs
+                )
             except requests.RequestException as exc:
                 raise ApiError(0, None, f"result poll failed: {exc}") from exc
             status = resp.status_code
@@ -452,7 +460,9 @@ class OAuthClient:
     def _post_form(self, path: str, data: dict, *, what: str) -> dict:
         url = f"{self._api_url}{path}"
         try:
-            resp = self._session.post(url, data=data, headers={"Accept": "application/json"})
+            resp = self._session.post(
+                url, data=data, headers={"Accept": "application/json"}, **self._request_kwargs
+            )
         except requests.RequestException as exc:
             raise ApiError(0, None, f"{what} request failed: {exc}") from exc
         return self._parse(resp, what)
