@@ -180,16 +180,20 @@ def test_decrypt_run_answers_only_company_copies(config, vector):
 # ── submit: per-party fan-out + local routing ─────────────────────────────────
 
 
+def _keys_batch(spki, next_router):
+    """Answer the by-user-id key fetch (POST /api/keys/batch) with spki for the person party and
+    hand every other write to next_router."""
+    def router(method, url, json_body, data):
+        if url.endswith("/api/keys/batch"):
+            return FakeResponse(
+                200, json_body={PERSON_UID: {"public_key": spki, "recipient_has_key": True}}
+            )
+        return next_router(method, url, json_body, data)
+    return router
+
+
 def test_submit_fans_out_per_party_and_routes_fallthrough(config, vector):
     spki = _vector_pub_spki_b64(vector)
-
-    def get_router(url, params):
-        # The person public key is resolved via the connection's share_code.
-        if url.endswith("/company-data/connections/csc-1"):
-            return FakeResponse(200, json_body={"connection_id": "csc-1", "share_code": "ABC123"})
-        if url.endswith("/api/keys/ABC123"):
-            return FakeResponse(200, json_body={"public_key": spki})
-        raise AssertionError("unexpected GET " + url)
 
     captured = {}
 
@@ -198,7 +202,7 @@ def test_submit_fans_out_per_party_and_routes_fallthrough(config, vector):
         captured["body"] = json_body
         return FakeResponse(200, json_body=_run_obj(status="awaiting_person", current="n2"))
 
-    client, _ = _client_rw(config, get_router, write_router)
+    client, _ = _client_rw(config, _no_get, _keys_batch(spki, write_router))
     run = FlowRun.from_api(_run_obj())  # at n1 (company), no 'tier' → fallthrough to n2
     out = client.submit_flow_answers(run, {"company_name": "ACME BV"})
 
@@ -208,8 +212,11 @@ def test_submit_fans_out_per_party_and_routes_fallthrough(config, vector):
     assert len(body["answers"]) == 1
     vals = body["answers"][0]["values"]
     assert {v["for_user_id"] for v in vals} == {COMPANY_UID, PERSON_UID}
+    # A sealed value travels as the wrapper's JSON string.
     for v in vals:
-        assert isinstance(v["value"], dict) and v["value"].get("_enc") == 1
+        assert isinstance(v["value"], str)
+        v["value"] = json.loads(v["value"])
+        assert v["value"].get("_enc") == 1
     # The company's own copy round-trips with the service private key.
     priv = load_private_key(vector["encrypted_private_key_pem"].encode("ascii"), vector["passphrase"])
     from allus_company_data.crypto import decrypt as _decrypt
@@ -225,20 +232,13 @@ def test_submit_fans_out_per_party_and_routes_fallthrough(config, vector):
 def test_submit_routes_guarded_edge_when_condition_true(config, vector):
     spki = _vector_pub_spki_b64(vector)
 
-    def get_router(url, params):
-        if url.endswith("/company-data/connections/csc-1"):
-            return FakeResponse(200, json_body={"connection_id": "csc-1", "share_code": "ABC123"})
-        if url.endswith("/api/keys/ABC123"):
-            return FakeResponse(200, json_body={"public_key": spki})
-        raise AssertionError("unexpected GET " + url)
-
     captured = {}
 
     def write_router(method, url, json_body, data):
         captured["body"] = json_body
         return FakeResponse(200, json_body=_run_obj(status="awaiting_person", current="n_end"))
 
-    client, _ = _client_rw(config, get_router, write_router)
+    client, _ = _client_rw(config, _no_get, _keys_batch(spki, write_router))
     run = FlowRun.from_api(_run_obj())
     # Fill 'tier'='vip' → the guarded n1→n_end edge matches FIRST (sort 0), so the
     # submit routes to n_end (the current node n1 has edges, so this is not a leaf submit;
@@ -329,10 +329,6 @@ def test_process_flow_run_company_leaf_document_chains_generate(config, vector):
                                "acted_at": None}] if state["posts"] else [],
             }]
             return FakeResponse(200, json_body=r)
-        if url.endswith("/company-data/connections/csc-1"):
-            return FakeResponse(200, json_body={"connection_id": "csc-1", "share_code": "ABC123"})
-        if url.endswith("/api/keys/ABC123"):
-            return FakeResponse(200, json_body={"public_key": spki})
         raise AssertionError("unexpected GET " + url)
 
     def write_router(method, url, json_body, data):
@@ -343,7 +339,7 @@ def test_process_flow_run_company_leaf_document_chains_generate(config, vector):
         assert url.endswith("/generate")
         return FakeResponse(200, json_body=_GENERATED)
 
-    client, _ = _client_rw(config, get_router, write_router)
+    client, _ = _client_rw(config, get_router, _keys_batch(spki, write_router))
     run = client.process_flow_run("run-1", lambda node, answers: {"company_name": "ACME BV"})
     # Submitted answers, then chained generate, then reloaded → awaiting_signature.
     assert any(u.endswith("/answers") for u in state["posts"])
