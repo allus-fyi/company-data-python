@@ -1211,6 +1211,10 @@ Call `check_flow_value` before `encrypt_flow_answer` seals a value. `customer.su
 reads the run once and marks every answer derived from another party's private source (the same
 rule) `source_private: True` before it is sent.
 
+The wire shape of each `answers[].values[].value` is the sealed wrapper serialized as a JSON string.
+`submit_flow_answers` and `customer.submit_flow_answers` send it that way, whether `values[].value` is
+the dict `encrypt_flow_answer` returns or a string; `encrypt_flow_answer` itself still returns the dict.
+
 **The evaluator helpers** (exported, pure): `expand_plugin_answers(answers, plugin_slugs)` — a new
 dict where each finished plugin answer becomes its summary (the blocks' values joined by `" / "`)
 plus `slug.<block>`, `slug.<block>.id` (a `search_select` pick's id) and `slug.<output>`, and an

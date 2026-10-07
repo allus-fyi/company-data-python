@@ -33,7 +33,7 @@ from urllib.parse import quote
 from . import webhooks as _webhooks
 from .config import Config
 from .crypto import fetch_batch_public_key, decrypt as crypto_decrypt, encrypt_for_public_key, load_public_key
-from .flow_sources import HeldSource, file_ref, generate_with_inputs, held_sources
+from .flow_sources import HeldSource, file_ref, generate_with_inputs, held_sources, seal_answer_values
 from .customer_models import CustomerConnection
 from .errors import ConfigError, ValidationError
 from .field_types import FieldTypeRegistry
@@ -293,6 +293,9 @@ class CustomerClient:
         Every answer whose field's default reads another party's private source is marked
         ``source_private: True`` before it is sent (the run is read once for the rule), so every
         later reader treats it as private.
+
+        Every ``answers[].values[].value`` goes out as the sealed wrapper's JSON string, whether the
+        caller passed the dict :meth:`encrypt_flow_answer` returns or a string.
         """
         answers = body.get("answers") if isinstance(body, dict) else None
         if isinstance(answers, list) and answers:
@@ -306,7 +309,7 @@ class CustomerClient:
                 for a in answers
             ]
         return self._http.post(
-            f"{_CONN}/{connection_id}/flow-runs/{run_id}/answers", json_body=body
+            f"{_CONN}/{connection_id}/flow-runs/{run_id}/answers", json_body=seal_answer_values(body)
         )
 
     def decline_flow_run(self, connection_id: str, run_id: str) -> Any:

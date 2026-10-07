@@ -75,7 +75,7 @@ from .crypto import (
 )
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError, ValidationError
 from .field_types import FieldTypeRegistry
-from .flow_sources import HeldSource, file_ref, generate_with_inputs, held_sources
+from .flow_sources import HeldSource, file_ref, generate_with_inputs, held_sources, sealed_string
 from .flow_condition import compute_constants as _compute_constants
 from .flow_condition import evaluate as evaluate_condition
 from .flow_condition import expand_plugin_answers as _expand_plugin_answers
@@ -1148,7 +1148,7 @@ class Client:
         """
         body = self._http.post(
             f"{_FLOWS}/{flow_id}/run-files",
-            json_body={"source_user_id": source_user_id, "value": _sealed_string(sealed_value)},
+            json_body={"source_user_id": source_user_id, "value": sealed_string(sealed_value)},
         )
         return _response_file(body)
 
@@ -1163,7 +1163,7 @@ class Client:
         """
         body = self._http.post(
             f"{_FLOW_RUNS}/{run_id}/answer-files",
-            json_body={"slug": slug, "for_user_id": for_user_id, "value": _sealed_string(sealed_value)},
+            json_body={"slug": slug, "for_user_id": for_user_id, "value": sealed_string(sealed_value)},
         )
         return _response_file(body)
 
@@ -1343,7 +1343,7 @@ class Client:
                     key = svc_pub
                 else:
                     key = self._flow_person_public_key(run, uid, party_pubkeys)
-                values.append({"for_user_id": uid, "value": encrypt_for_public_key(plain, key)})
+                values.append({"for_user_id": uid, "value": sealed_string(encrypt_for_public_key(plain, key))})
             answer = {"slug": slug, "values": values}
             # A value whose field's default reads another party's private source is private
             # too, so every later reader treats it as one.
@@ -1610,11 +1610,6 @@ def _load_service_key(config: Config):
     except DecryptError as exc:
         # A bad passphrase / malformed PEM is a configuration problem (fail fast).
         raise ConfigError(f"could not load service private key: {exc}") from exc
-
-
-def _sealed_string(sealed_value: Any) -> str:
-    """A sealed wrapper as the JSON string an upload body carries."""
-    return sealed_value if isinstance(sealed_value, str) else json.dumps(sealed_value)
 
 
 def _response_file(body: Any) -> str:

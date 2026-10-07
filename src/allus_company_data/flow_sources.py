@@ -18,6 +18,38 @@ from .crypto import new_one_time_key, one_time_key_bundle, one_time_key_seal
 from .errors import ApiError
 
 
+def sealed_string(sealed_value: Any) -> str:
+    """A sealed wrapper as the JSON string a flow-answer or upload body carries."""
+    return sealed_value if isinstance(sealed_value, str) else json.dumps(sealed_value)
+
+
+def seal_answer_values(body: Any) -> Any:
+    """``body`` with every ``answers[].values[].value`` sent as the sealed wrapper's JSON string.
+
+    A value that already is a string, and everything else in the body, stays as it is; the
+    caller's own structure is not modified.
+    """
+    answers = body.get("answers") if isinstance(body, dict) else None
+    if not isinstance(answers, list):
+        return body
+
+    def seal_answer(a: Any) -> Any:
+        values = a.get("values") if isinstance(a, dict) else None
+        if not isinstance(values, list):
+            return a
+        return {
+            **a,
+            "values": [
+                {**v, "value": sealed_string(v["value"])}
+                if isinstance(v, dict) and v.get("value") is not None
+                else v
+                for v in values
+            ],
+        }
+
+    return {**body, "answers": [seal_answer(a) for a in answers]}
+
+
 def file_ref(value: Any) -> Optional[str]:
     """The file a plaintext ``{"_enc_file": file, …}`` answer value names, else ``None``.
 
