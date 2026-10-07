@@ -21,6 +21,9 @@ It owns:
   :class:`AuthError`; a 429 → read ``Retry-After`` and back off + retry a bounded
   number of times, then :class:`RateLimitError`; any other non-2xx →
   :class:`ApiError` carrying the body's ``error_key`` when present.
+* **A closed connection** — a request whose connection the server closed without sending
+  any of the response is sent once more before anything is reported. See
+  :func:`send_resending_once`.
 
 Config-only key handling: the client id/secret come from the
 :class:`~allus_company_data.config.Config` — never a method argument.
@@ -30,10 +33,12 @@ from __future__ import annotations
 
 import time
 import xml.etree.ElementTree as ET
-from typing import Any, Optional
+from http.client import RemoteDisconnected
+from typing import Any, Callable, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
+from urllib3.exceptions import ProtocolError
 
 from .config import Config
 from .errors import ApiError, AuthError, RateLimitError
@@ -111,11 +116,13 @@ class HttpClient:
             "client_secret": self._config.client_secret,
         }
         try:
-            resp = self._session.post(
-                url,
-                data=data,
-                headers={"Accept": "application/json"},
-                **self._request_kwargs,
+            resp = send_resending_once(
+                lambda: self._session.post(
+                    url,
+                    data=data,
+                    headers={"Accept": "application/json"},
+                    **self._request_kwargs,
+                )
             )
         except requests.RequestException as exc:  # network failure
             raise AuthError(f"token request failed: {exc}") from exc
@@ -282,13 +289,15 @@ class HttpClient:
                 headers["Content-Type"] = "application/json"
                 body_kwargs["json"] = json_body
             try:
-                resp = self._session.request(
-                    method,
-                    url,
-                    params=params,
-                    headers=headers,
-                    **body_kwargs,
-                    **self._request_kwargs,
+                resp = send_resending_once(
+                    lambda: self._session.request(
+                        method,
+                        url,
+                        params=params,
+                        headers=headers,
+                        **body_kwargs,
+                        **self._request_kwargs,
+                    )
                 )
             except requests.RequestException as exc:
                 raise ApiError(0, None, f"request to {path} failed: {exc}") from exc
@@ -395,6 +404,40 @@ class HttpClient:
 
 
 # ── module-level helpers ─────────────────────────────────────────────────────
+
+
+def send_resending_once(send: Callable[[], "requests.Response"]) -> "requests.Response":
+    """Call ``send`` and, when the server closed its connection without sending any of the response,
+    call it once more and answer with that second outcome, failure included.
+
+    That is the server ending a kept-alive connection on its idle timeout at the moment a request
+    was written to it: the server never read the request, so sending it again is the request's
+    first delivery, and the closed connection is never picked again. ``requests`` does not report
+    whether the connection had carried an earlier request, so a first request on a new connection
+    closed this way is sent again too. Nothing else is sent again — not a reset or a broken pipe
+    (they do not show whether part of a response had arrived), a timeout, a connection that could
+    not be opened, a TLS failure, nor a response that had begun.
+    """
+    try:
+        return send()
+    except requests.ConnectionError as exc:
+        if not _closed_without_response(exc):
+            raise
+    return send()
+
+
+def _closed_without_response(exc: BaseException) -> bool:
+    """Whether a ``requests`` connection error is the server closing the connection before sending
+    a single byte of the response.
+
+    ``requests`` raises that as ``ConnectionError(ProtocolError("Connection aborted.", cause))``
+    whose cause is ``http.client``'s ``RemoteDisconnected``: raised only when the read of the status
+    line returned no bytes at all (a partial status line raises ``BadStatusLine``, its parent).
+    """
+    for arg in exc.args:
+        if isinstance(arg, ProtocolError):
+            return any(isinstance(cause, RemoteDisconnected) for cause in arg.args)
+    return False
 
 
 def _extract_error(

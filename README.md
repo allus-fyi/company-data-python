@@ -1291,6 +1291,17 @@ seconds for the platform's answer to one request, and the call then fails as it
 does when the connection drops; a `requests.Session` you pass in keeps its own
 limit. A request given up may still have completed on the platform.
 
+**A connection closed before the answer is tried once more.** When the platform
+closes the connection without sending a single byte of the answer (`requests`
+reports `RemoteDisconnected`), the SDK sends the request once more and reports
+only the second failure; this also holds for a `requests.Session` you pass in. A
+reset or a broken pipe is not resent. A request is never sent again once any
+byte of its answer has arrived, after the 45 seconds ran out, or when the
+connection could not be opened. The SDK cannot tell a reused connection from a
+new one, so a first request on a new connection closed this way is sent again
+too. A request the platform acted on before its connection died with no answer
+at all runs twice.
+
 **503 `db.writes_paused` — saving is paused, retry.** While the platform cannot
 complete a save in every region, any call that is not a GET, the change-feed
 drains (`process_changes`, `drain_batch`) and `OAuthClient.poll_result` can answer

@@ -27,7 +27,7 @@ import requests
 from .config import Config
 from .crypto import decrypt, hash_matches, load_private_key
 from .errors import ApiError, AuthError, ConfigError
-from .http import REQUEST_TIMEOUT
+from .http import REQUEST_TIMEOUT, send_resending_once
 from .models import PluginValue, expiry_passed
 
 # The hosted consent surface. The native apps claim this https link (universal/app
@@ -280,10 +280,12 @@ class OAuthClient:
         """
         url = f"{self._api_url}/api/oauth/userinfo"
         try:
-            resp = self._session.get(
-                url,
-                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
-                **self._request_kwargs,
+            resp = send_resending_once(
+                lambda: self._session.get(
+                    url,
+                    headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                    **self._request_kwargs,
+                )
             )
         except requests.RequestException as exc:
             raise ApiError(0, None, f"userinfo request failed: {exc}") from exc
@@ -432,8 +434,10 @@ class OAuthClient:
         deadline = time.monotonic() + timeout
         while True:
             try:
-                resp = self._session.post(
-                    url, data=data, headers={"Accept": "application/json"}, **self._request_kwargs
+                resp = send_resending_once(
+                    lambda: self._session.post(
+                        url, data=data, headers={"Accept": "application/json"}, **self._request_kwargs
+                    )
                 )
             except requests.RequestException as exc:
                 raise ApiError(0, None, f"result poll failed: {exc}") from exc
@@ -460,8 +464,10 @@ class OAuthClient:
     def _post_form(self, path: str, data: dict, *, what: str) -> dict:
         url = f"{self._api_url}{path}"
         try:
-            resp = self._session.post(
-                url, data=data, headers={"Accept": "application/json"}, **self._request_kwargs
+            resp = send_resending_once(
+                lambda: self._session.post(
+                    url, data=data, headers={"Accept": "application/json"}, **self._request_kwargs
+                )
             )
         except requests.RequestException as exc:
             raise ApiError(0, None, f"{what} request failed: {exc}") from exc
