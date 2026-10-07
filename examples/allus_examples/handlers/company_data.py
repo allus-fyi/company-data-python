@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from allus_company_data import Client, Config, HttpClient, WebhookError
+from allus_company_data import ApiError, Client, Config, HttpClient, WebhookError
 from allus_company_data.crypto import BinaryHandle
 
 from ..common import (
@@ -88,11 +88,14 @@ CALL_PROCESS_CHANGES = (
     "before ack, at-least-once (dedup on Change.id), failures to the local dead-letter store"
 )
 CALL_CREATE_DOCUMENT = "Client.create_document — {label}"
-CALL_LIST_DOCUMENTS = (
-    "Client.list_documents — GET /api/company-data/documents: pages the service's documents "
-    "so cleanup finds everything it created"
+CALL_DELETE_DOCUMENT = (
+    "Client.delete_document — DELETE /api/company-data/documents/{document_id}: "
+    "one document this example created"
 )
-CALL_DELETE_DOCUMENT = "Client.delete_document — DELETE /api/company-data/documents/{document_id}"
+CALL_END_DOCUMENT = (
+    "Client.update_document_status — PUT /api/company-data/documents/{document_id}: status ended, "
+    "because the platform refuses to delete a contract that carries a signature"
+)
 CALL_WEBHOOK_STARTED = (
     "(webhook run started) — POST /webhook receives each delivery; every poll also drains the "
     "change feed as a fallback"
@@ -176,6 +179,10 @@ class CompanyDataHandlers:
                 meta["webhook_id"] = webhook_id  # the routing key /start writes into the route record
         if scenario_id == DOCUMENTS:
             meta["share_code"] = str(data.get("shareCode") or "")  # the per-person/contract target
+            # The saved service the run and the clean-up act as; the record of created documents is
+            # kept across saves, each entry tagged with the service that created it.
+            meta["client_id"] = str(data.get("clientId") or "")
+            meta["created_documents"] = self._created_documents()
             # Preserve presence so _do_documents() can distinguish an explicit empty selection
             # from an absent selection; absence means all document types.
             if "documentTypes" in data:
@@ -301,13 +308,15 @@ class CompanyDataHandlers:
                 opts["share_code"] = share_code
             calls.append(CALL_CREATE_DOCUMENT.format(label=spec["label"]))
             doc = client.create_document(**opts)
+            self._record_created_document(doc.id)
             docs.append({"index": len(docs) + 1, "label": spec["label"], "document_id": doc.id, "status": doc.status})
         return {"docs": docs}
 
-    # POST /api/scenarios/{id}/cleanup (companydata:documents only) — delete every document the
-    # documents scenario has created on this service, so a reused account can reset between runs
-    # (companydata:documents is additive: create_document mints a new document each run; nothing
-    # deletes a prior run's). Not part of the generic scenario dispatch: routed directly by the
+    # POST /api/scenarios/{id}/cleanup (companydata:documents only) — remove the documents the
+    # documents scenario created, so a reused account can reset between runs (companydata:documents
+    # is additive: create_document mints a new document each run; nothing deletes a prior run's).
+    # Only the ids this example recorded are touched; a document of the service it did not create is
+    # never listed or deleted. Not part of the generic scenario dispatch: routed directly by the
     # server, the same way /enroll is identity-only.
     def cleanup(self, scenario_id: str) -> Response:
         if scenario_id != DOCUMENTS:
@@ -317,17 +326,52 @@ class CompanyDataHandlers:
         return self._data_run(scenario_id, self._do_cleanup_documents)
 
     def _do_cleanup_documents(self, client: Client, calls: List[str]) -> Dict[str, Any]:
+        """Delete each document recorded for the saved service. A contract that carries a signature is
+        refused with documents.contract_immutable: it is set to status ended instead and reported in
+        ``ended``, and the clean-up goes on. A document already gone (documents.not_found) needs
+        nothing. Each id leaves the record as soon as it is dealt with, so a failure part-way leaves
+        only the unprocessed ones. Documents recorded for another service stay in the record untouched
+        until that service is saved again."""
         deleted = 0
-        while True:
-            calls.append(CALL_LIST_DOCUMENTS)
-            page = client.list_documents(limit=100, offset=0)
-            if not page:
-                break
-            for doc in page:
-                calls.append(CALL_DELETE_DOCUMENT.format(document_id=doc.id))
-                client.delete_document(doc.id)
+        ended: List[str] = []
+        client_id = str(self.rt.read_config_meta(DOCUMENTS).get("client_id") or "")
+        for rec in self._created_documents():
+            if rec["client_id"] != client_id:
+                continue
+            document_id = rec["id"]
+            calls.append(CALL_DELETE_DOCUMENT.format(document_id=document_id))
+            try:
+                client.delete_document(document_id)
                 deleted += 1
-        return {"deleted": deleted}
+            except ApiError as e:
+                if e.error_key == "documents.contract_immutable":
+                    calls.append(CALL_END_DOCUMENT.format(document_id=document_id))
+                    client.update_document_status(document_id, "ended")
+                    ended.append(document_id)
+                elif e.error_key != "documents.not_found":
+                    raise
+                # not_found: already removed elsewhere — nothing left to clean up
+            self._forget_created_document(document_id, client_id)
+        return {"deleted": deleted, "ended": ended}
+
+    def _created_documents(self) -> List[Dict[str, str]]:
+        """The documents this example created, kept in the documents scenario's setup sidecar."""
+        raw = self.rt.read_config_meta(DOCUMENTS).get("created_documents") or []
+        return [{"id": str(r.get("id") or ""), "client_id": str(r.get("client_id") or "")} for r in raw if isinstance(r, dict)]
+
+    def _record_created_document(self, document_id: str) -> None:
+        client_id = str(self.rt.read_config_meta(DOCUMENTS).get("client_id") or "")
+        self._write_created_documents(self._created_documents() + [{"id": document_id, "client_id": client_id}])
+
+    def _forget_created_document(self, document_id: str, client_id: str) -> None:
+        self._write_created_documents([
+            r for r in self._created_documents() if not (r["id"] == document_id and r["client_id"] == client_id)
+        ])
+
+    def _write_created_documents(self, records: List[Dict[str, str]]) -> None:
+        meta = self.rt.read_config_meta(DOCUMENTS)
+        meta["created_documents"] = records
+        self.rt.write_config_meta(DOCUMENTS, meta)
 
     # ── companydata:webhook — the accumulating run + public receiver ──────────
 
