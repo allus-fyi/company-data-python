@@ -218,6 +218,15 @@ class HttpClient:
             "POST", path, json_body=json_body, raw_body=raw_body, content_type=content_type
         )
 
+    def post_response(self, path: str, json_body: Any = None) -> "requests.Response":
+        """POST a JSON body returning the whole 2xx response, no parse.
+
+        The counterpart of :meth:`get_response` for a route that answers JSON whatever
+        ``config.format`` is: the caller parses the body with ``parse_body(resp, False)``.
+        Auth/refresh/retry and error mapping are identical to :meth:`post`.
+        """
+        return self._request("POST", path, json_body=json_body, want_response=True)
+
     def put(self, path: str, json_body: Any = None) -> Any:
         """PUT ``path`` with a JSON body → parsed body."""
         return self._request("PUT", path, json_body=json_body)

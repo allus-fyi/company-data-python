@@ -183,6 +183,22 @@ def load_public_key(spki_b64: str) -> rsa.RSAPublicKey:
     return key
 
 
+def fetch_batch_public_key(http, user_id: str) -> Optional[rsa.RSAPublicKey]:
+    """One user's public key through ``POST /api/keys/batch``, or None when the user has none.
+
+    The route answers JSON whatever the client's configured format is, so the body is parsed as
+    JSON. The answer is a flat map ``{user_id: {public_key, public_key_sha256,
+    recipient_has_key}}`` carrying every requested id; a user without a key has ``public_key`` null.
+    ``http`` is the client's own HTTP layer, so auth, rebase and retry are its own.
+    """
+    resp = http.post_response("/api/keys/batch", {"user_ids": [user_id]})
+    body = http.parse_body(resp, False)
+    entry = body.get(user_id) if isinstance(body, dict) else None
+    if isinstance(entry, dict):
+        entry = entry.get("public_key")
+    return load_public_key(entry) if isinstance(entry, str) and entry else None
+
+
 def encrypt_for_public_key(plaintext: str, public_key: rsa.RSAPublicKey) -> dict:
     """Encrypt a UTF-8 string FOR a recipient RSA public key → a {"_enc":1,k,iv,d} wrapper.
 

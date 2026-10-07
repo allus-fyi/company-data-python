@@ -71,6 +71,7 @@ from .crypto import (
     encrypt_for_public_key,
     load_private_key,
     load_public_key,
+    fetch_batch_public_key,
 )
 from .errors import ApiError, ConfigError, DecryptError, RateLimitError, ValidationError
 from .field_types import FieldTypeRegistry
@@ -192,6 +193,11 @@ class Client:
         # compare-and-store -- but is never held across the HTTP call.
         self._pubkey_gen: dict[str, int] = {}
         self._pubkey_lock = threading.Lock()
+        # Run-party public keys, by the party's user id. One generation for the whole map: a
+        # rotation signal names a share code, which does not say which user id it belongs to, so
+        # every entry is dropped and an in-flight fetch must not write back across it.
+        self._user_pubkey_cache: dict[str, Any] = {}
+        self._user_pubkey_gen = 0
 
     # ── constructors (config-only keys) ────────────────────────────────────────
 
@@ -544,6 +550,8 @@ class Client:
             self._pubkey_cache.pop(share_code, None)
             # Any fetch already in flight must not write its stale result back.
             self._pubkey_gen[share_code] = self._pubkey_gen.get(share_code, 0) + 1
+            self._user_pubkey_cache.clear()
+            self._user_pubkey_gen += 1
 
     def _decrypt_change(self, event: dict) -> Change:
         """The pump's decrypt: a raw event dict → a typed :class:`Change` (value at delivery)."""
@@ -642,6 +650,21 @@ class Client:
         with self._pubkey_lock:
             if self._pubkey_gen.get(share_code, 0) == gen:
                 self._pubkey_cache[share_code] = key
+        return key
+
+    def _user_public_key(self, user_id: str):
+        """A run party's public key by its user id, through ``POST /api/keys/batch``."""
+        with self._pubkey_lock:
+            cached = self._user_pubkey_cache.get(user_id)
+            gen = self._user_pubkey_gen
+        if cached is not None:
+            return cached
+        key = fetch_batch_public_key(self._http, user_id)
+        if key is None:
+            raise ApiError(0, "keys.not_found", f"no public key for user {user_id}")
+        with self._pubkey_lock:
+            if self._user_pubkey_gen == gen:
+                self._user_pubkey_cache[user_id] = key
         return key
 
     def _resolve_share_code(
@@ -1250,17 +1273,13 @@ class Client:
     def _flow_person_public_key(self, run: FlowRun, uid: str, party_pubkeys: dict):
         """Resolve a person party's RSA public key for per-party answer encryption.
 
-        Prefers a caller-supplied key, else resolves the person's share_code from
-        the run's connection (the connection carries it) → ``GET /api/keys/{code}``.
-
-        Integration gap: the run payload exposes neither person public keys nor
-        per-binding share codes, so the SDK resolves via the connection. Pass
-        ``party_pubkeys={uid: RSAPublicKey}`` to skip the lookup entirely.
+        Prefers a caller-supplied key, else fetches the party's key by its user id. A run's
+        ``connection_id`` names the company-connection pair, not a service link, so it is never
+        used to look the party up. Pass ``party_pubkeys={uid: RSAPublicKey}`` to skip the lookup.
         """
         if uid in party_pubkeys:
             return party_pubkeys[uid]
-        share_code = self._resolve_share_code(run.connection_id, uid)
-        return self._recipient_public_key(share_code)
+        return self._user_public_key(uid)
 
     def submit_flow_answers(self, run: FlowRun, fill: dict, *, party_pubkeys: Optional[dict] = None) -> FlowRun:
         """Fill the company's current node and advance.

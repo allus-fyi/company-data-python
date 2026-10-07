@@ -32,7 +32,7 @@ from urllib.parse import quote
 
 from . import webhooks as _webhooks
 from .config import Config
-from .crypto import decrypt as crypto_decrypt, encrypt_for_public_key, load_public_key
+from .crypto import fetch_batch_public_key, decrypt as crypto_decrypt, encrypt_for_public_key, load_public_key
 from .flow_sources import HeldSource, file_ref, generate_with_inputs, held_sources
 from .customer_models import CustomerConnection
 from .errors import ConfigError, ValidationError
@@ -687,10 +687,7 @@ class CustomerClient:
             if user_id in self._pubkey_cache:
                 return self._pubkey_cache[user_id]
             gen = self._pubkey_gen.get(user_id, 0)
-        body = self._http.post(f"{_KEYS}/batch", json_body={"user_ids": [user_id]})
-        keys = body.get("keys") if isinstance(body, dict) else None
-        spki = keys.get(user_id) if isinstance(keys, dict) else None
-        loaded = load_public_key(spki) if spki else None
+        loaded = fetch_batch_public_key(self._http, user_id)
         # Store ONLY if no invalidation happened while the request was in flight. The compare and
         # the assignment must be one critical section — see the note on the lock above.
         with self._pubkey_lock:
