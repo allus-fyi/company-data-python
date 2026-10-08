@@ -4,7 +4,7 @@ ONE ``.runtime/`` tree backs all three scenario families (identity, flow,
 company-data). Connections run on separate threads, while the launcher's dispatch
 lock serialises every request, so this module needs no additional locks, tombstones
 or burn-on-read machinery. Everything lives under ``.runtime/`` (git-ignored,
-wiped at startup):
+wiped at startup; or under the directory ``EXAMPLE_RUNTIME_DIR`` names):
 
 * ``config/{key}.json``      - the canonical SDK config file a scenario runs OFF
   (written by ``POST /api/scenarios/{id}/config`` from the browser settings; NOT
@@ -50,7 +50,7 @@ _KEY_FIELDS = ("oauth_private_key", "service_private_key")
 class Runtime:
     def __init__(self, base_dir: str) -> None:
         self.base_dir = base_dir
-        self.runtime_dir = os.path.join(base_dir, ".runtime")
+        self.runtime_dir = os.environ.get("EXAMPLE_RUNTIME_DIR") or os.path.join(base_dir, ".runtime")
         self.runs_dir = os.path.join(self.runtime_dir, "runs")
         self.config_dir = os.path.join(self.runtime_dir, "config")
         self.config_keys_dir = os.path.join(self.config_dir, "keys")
@@ -109,10 +109,13 @@ class Runtime:
         return os.path.isfile(self.config_path_for(key))
 
     def write_config(self, key: Any, config: Dict[str, Any]) -> str:
-        """Write a scenario's canonical SDK config file. Returns the RELATIVE path."""
+        """Write a scenario's canonical SDK config file. Returns the path for display: relative to
+        the example directory under the default runtime directory, under the selected directory with EXAMPLE_RUNTIME_DIR."""
         self.ensure_dirs()
         _atomic_write(self.config_path_for(key), _dumps(config))
-        return f".runtime/config/{self.sid(key)}.json"
+        if self.runtime_dir == os.path.join(self.base_dir, ".runtime"):
+            return f".runtime/config/{self.sid(key)}.json"
+        return self.config_path_for(key)
 
     def write_config_meta(self, key: Any, meta: Dict[str, Any]) -> None:
         self.ensure_dirs()

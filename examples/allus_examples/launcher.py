@@ -3,7 +3,7 @@
 ONE server, ONE port, all three scenario families. Runs INSIDE the example's venv
 (deps installed), so ``allus_company_data`` + ``authlib`` import cleanly. Steps:
 
-1. wipe ``.runtime/`` (fresh state each boot),
+1. wipe the runtime state directory (``.runtime/``, or ``EXAMPLE_RUNTIME_DIR``; fresh state each boot),
 2. on a missing/unverified bundle: fetch the pinned frontend release
    (``frontend.lock``), VERIFY sha256, unpack to ``.frontend/<tag>/`` (a present,
    checksum-verified bundle is a cache hit — nothing is re-fetched),
