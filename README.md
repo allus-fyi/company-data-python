@@ -238,6 +238,21 @@ if phone:
     print(phone.value, "live" if phone.live else "snapshot")
 ```
 
+### `delete_connection(connection_id)`
+
+```python
+delete_connection(connection_id: str) -> None
+```
+
+End one of this service's connections (`DELETE /api/company-data/connections/{id}`). It leaves exactly the state the customer's own disconnect leaves: the link, the answers and copies held through it and the pair's messages on this service are deleted; the company connection, documents, signatures and flow runs stay. The customer is told by the platform, and `connection_deleted` reaches your change feed and webhooks. A customer whose account was deleted can still be disconnected. Reconnecting stays possible.
+
+* **Returns:** nothing.
+* **Throws:** `AuthError`, `ApiError`, `RateLimitError`; refusals are `404` `company_data.connection_not_found` (an id that is not a connection of this service) and `409` `company_connections.active_contract` (the customer holds an active agreement or subscription on this service).
+
+```python
+client.delete_connection(conn_id)
+```
+
 ### `logs(limit, offset)`
 
 ```python

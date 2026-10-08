@@ -43,6 +43,14 @@ conn.values["work_email"].value        # "alice@acme.com"
 conn.values.get("mobile")               # None if the person didn't answer that slot
 ```
 
+### Ending a connection
+
+```
+delete_connection(connection_id: str) -> None
+```
+
+`DELETE /api/company-data/connections/{id}` — the service ends one of its own connections; `id` is `Connection.id`. It leaves exactly the state the customer's own disconnect leaves, and returns nothing. The customer is told by the platform, and a `connection_deleted` change reaches the pump and webhooks. Errors: `AuthError`, `ApiError`, `RateLimitError`; the refusals are `404` `company_data.connection_not_found` (not a connection of this service) and `409` `company_connections.active_contract` (the customer holds an active agreement or subscription on this service).
+
 ## `Value`
 
 One answer for one of your request slots.

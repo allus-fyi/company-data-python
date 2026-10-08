@@ -494,6 +494,19 @@ class Client:
             binary_fetch=self._binary_fetch,
         )
 
+    def delete_connection(self, connection_id: str) -> None:
+        """End one of THIS service's connections (the service side of a disconnect).
+
+        Wraps ``DELETE /api/company-data/connections/{id}``. It leaves exactly the
+        state the customer's own disconnect leaves; the customer is told by the
+        platform, and ``connection_deleted`` reaches your change feed and webhooks.
+        Returns nothing. Refused with :class:`ApiError` ``404``
+        ``company_data.connection_not_found`` for an id that is not a connection of
+        this service, and ``409`` ``company_connections.active_contract`` while the
+        customer holds an active agreement or subscription on it.
+        """
+        self._http.delete(f"{_CONNECTIONS}/{connection_id}")
+
     # ── logs (moderate rate-limit) ──────────────────────────────────────────────
 
     def logs(self, limit: int = 50, offset: int = 0) -> List[LogEntry]:
