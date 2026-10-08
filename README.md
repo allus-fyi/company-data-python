@@ -207,7 +207,8 @@ Each `conn.values[slug]` is already decrypted (or a lazy binary handle).
 
 * **Params:** `limit` — page size (default 100); `offset` — starting offset.
 * **Returns:** `Iterator[Connection]`.
-* **Raises:** `AuthError`, `ApiError`, `DecryptError` (per value, at access), `RateLimitError` (after the iterator's bounded internal backoff — see [Rate limits](#rate-limits)).
+* **Raises:** `AuthError`, `ApiError`, `RateLimitError` (after the iterator's bounded internal backoff — see [Rate limits](#rate-limits)).
+* **A value the service key cannot open never ends the listing.** It is returned in its own place with `value` `None` and `unreadable` `True` (see [`Value`](#value)), and every other value and connection is returned as usual. When every value of every connection reads `unreadable`, check the configured `service_private_key`.
 
 > **Heavily rate-limited.** Use for the initial full sync + occasional
 > reconciliation only — never as a poll substitute for the changes feed. The
@@ -229,7 +230,7 @@ Fetch one connection by its connection id (`GET /api/company-data/connections/{i
 
 * **Params:** `id` — the connection id (`Connection.id`).
 * **Returns:** one `Connection`. Note: this endpoint returns `{connection_id, user_id, values}` and **no** `display_name`/`connected_at`, so those identity fields are `None` here (the list endpoint carries them).
-* **Raises:** `AuthError`, `ApiError` (404 if unknown), `DecryptError`, `RateLimitError`.
+* **Raises:** `AuthError`, `ApiError` (404 if unknown), `RateLimitError`. A value the service key cannot open is returned marked `unreadable`, never raised.
 
 ```python
 conn = client.connection(conn_id)
@@ -397,7 +398,7 @@ You work with these objects and nothing else (`from allus_company_data import �
 RequestField { slug, label, type, one_time, mandatory, verified, verified_max_age_days }
 Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
 Value        { value, live, updated_at, verified, verified_at, verified_expires_at,
-               verified_method, verified_provider, verification_id }
+               verified_method, verified_provider, verification_id, unreadable }
 Change       { id, event, person_id, slug?, value?, live?, document_id?, status?, at,
                sealed_at?, plain_sha256?, signer_first_name?, signer_last_name?, signer_name_verified? }
 Document     { id, kind, name, description, status, payload_kind, is_private, value, metadata,
@@ -425,8 +426,11 @@ source slug, no `field_id`, not even via `.raw`.
 | `verified_method` | HOW allme bound the value: `email_code` \| `sms_code` \| `sumsub_id` \| `sumsub_address`. |
 | `verified_provider` | WHO established the proof: `allme` \| `sumsub`. |
 | `verification_id` | The proof id to quote back to allme in a dispute — it resolves the full record, including facts you never receive. |
+| `unreadable` | `True` when the answer is present but the configured service key cannot open it — sealed to a key the service has since replaced, or a wrong configured key. `value` is then `None` and `verified` `False`; every other attribute is read as for a readable value. |
 
-The last three are the **proof metadata** and arrive **together or not at all**: a value bound before
+**Not readable is not empty.** An unanswered value is `value` `None` with `unreadable` `False`; a value that could not be opened is `value` `None` with `unreadable` `True`. A binary value is a lazy handle and is never marked: a binary whose file cannot be opened fails when its bytes are read. When every value of every connection reads `unreadable`, check the configured `service_private_key`.
+
+`verified_method`, `verified_provider` and `verification_id` are the **proof metadata** and arrive **together or not at all**: a value bound before
 the proof log existed carries the four verification keys and none of these, so all three read `None`.
 They are readable whatever `verified` says — that boolean stays the only trust decision.
 
@@ -1052,7 +1056,7 @@ flow_run_source_file(run_id, source_key)                   -> dict     # the sea
 published_flow(flow_id)                                    -> PublishedFlow
 flow_runs(*, status="awaiting_company")                    -> list[FlowRun]
 flow_run(run_id)                                            -> FlowRun
-flow_run_answers(run)                                        -> dict[str, str]  # #491 gap 1
+flow_run_answers(run)                                        -> FlowRunAnswers
 submit_flow_answers(run, fill, *, party_pubkeys=None)       -> FlowRun
 generate_flow_document(run)                                  -> dict
 process_flow_run(run_id, fill_node, *, party_pubkeys=None)  -> FlowRun
@@ -1062,7 +1066,7 @@ identity()                                                    -> dict           
 * `trigger_flow_run(flow_id, connection_id=..., bindings={...})` starts a run bound to a connection and the flow's other parties, pinning the flow's latest **published** version.
 * `trigger_flow_run` reads the flow's latest published version first (`published_flow(flow_id)` — its `version`, `definition` and the service's request-field types) and sends it as `flow_version`. When that version's text elements show the customer's shared values (`{{party.field}}` tags), it opens those values from the connection with the service key and seals them per recipient — ONE wrapper of the non-private values, and each private value on its own — to the company (the service key) and to the customer, and sends them as `tag_values`; the connection's `values_private` decides which values are private (a slug it does not name is private). A newer publish in between (`flows.version_changed`) is re-read and retried once; a customer key that changed (`flows.tag_values_stale`) is re-read and retried once; a stale SERVICE key raises a `ConfigError` — rebuild the client with the service's current private key. The run carries `owner_tag_values` (the owning company's profile values the text names, plaintext) and `tag_values` (the company's sealed set).
 * `flow_runs(status=...)` / `flow_run(run_id)` list / fetch runs. `status=None` returns everything; the default `"awaiting_company"` is the actionable queue.
-* `flow_run_answers(run)` (#491 gap 1) — a run's **decrypted** answers as `{slug: plaintext}`, reading the company's service-key answer copies. Accepts a loaded `FlowRun` or a run id (fetched via `flow_run`).
+* `flow_run_answers(run)` — a run's answers as a `FlowRunAnswers`, reading the company's service-key answer copies: `.answers` is the **decrypted** `{slug: plaintext}` map, `.unreadable` the list of slugs whose answer the service key could not open (empty when every answer opened). An unreadable answer is left out of `.answers` and never fails the call. Accepts a loaded `FlowRun` or a run id (fetched via `flow_run`).
 * `submit_flow_answers` / `generate_flow_document` / `process_flow_run` fill the company's current node, advance the run (encrypting one answer copy per bound party), and — at a document-mode leaf — generate its output documents. See the method docstrings for the full per-party encryption details.
 * `generate_flow_document(run)` returns `{"documents": [...], "status": ...}` — one `{output_key, party_key, document_id, position}` per produced (output document, participant). A leaf can produce several named output documents (e.g. "Contract" and "Addendum"); `position` is the step's 1-based place in the run's ONE signing line (one signer at a time, across every output), `None` for a party an output's signer list does not name. A repeat answers the same set.
 * A `FlowRun`'s `participants` are `FlowRunParticipant(party_key, person_user_id, connection_id, documents)`; `documents` is that participant's own copy of each output document — `FlowRunParticipantDocument(output_key, name, document_id, document_status, requires_signature, requires_acceptance, position, action, acted_at)`, ordered by line position.
@@ -1124,7 +1128,7 @@ run = client.trigger_flow_run(
 )
 
 # Later, once the run is complete:
-answers = client.flow_run_answers(run.id)     # {slug: plaintext} — the company's copies
+answers = client.flow_run_answers(run.id).answers   # {slug: plaintext} — the company's copies
 
 # If the flow's output_mode is "document", download the company's OWN copy of every
 # output document (encrypted to the SERVICE key, unlike a per-person document_file()):
@@ -1276,7 +1280,7 @@ All from `allus_company_data`. Same taxonomy + names across all six SDKs.
 | `ConfigError` | Missing/invalid config, unreadable key file, or wrong passphrase — at construction (fail fast). |
 | `AuthError` | Token fetch/refresh failed (bad `client_id`/`secret`, revoked client); or a 401 survives the one automatic refresh-and-retry. |
 | `ApiError(status, error_key, message, details)` | Any non-2xx from the API; carries the HTTP `status`, the platform `error_key` (when present), `message`, and `details` — the error body's remaining fields (e.g. a 410 `company_data.file_expired`'s `content_sha256` + `expired_at`). |
-| `DecryptError` | A ciphertext wrapper is malformed, the key is wrong, or the GCM tag mismatches. Surfaces when a value is accessed/decrypted. |
+| `DecryptError` | A ciphertext wrapper is malformed, the key is wrong, or the GCM tag mismatches. Surfaces when a binary value's bytes are read, on a change event (the pump dead-letters it; a webhook parse raises it) and from flow-run routing and generation. `connections`/`connection` never raise it for a value — they mark it `unreadable` — and `flow_run_answers` lists such an answer under `unreadable`. |
 | `WebhookError` | Signature verification failed, or an envelope couldn't be unwrapped/parsed. |
 | `RateLimitError(retry_after)` | A 429 from a rate-limited endpoint. Subclass of `ApiError` (status fixed at 429); carries `retry_after` (seconds, or `None`). |
 | `ValidationError` | A value failed its field type (`slug`, `field_type`), or a flow field's minimum/maximum (`bound`, `bound_value`). |

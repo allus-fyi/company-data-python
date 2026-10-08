@@ -92,7 +92,7 @@ from .flow_plugins import (
     prepare_plugin_call,
 )
 from .http import HttpClient
-from .models import Change, Connection, Document, FlowRun, LogEntry, PublishedFlow, RequestField
+from .models import Change, Connection, Document, FlowRun, FlowRunAnswers, LogEntry, PublishedFlow, RequestField
 from .flow_text import PartyTag, non_owner_party_tags
 from .pump import Pump
 from . import webhooks as _webhooks
@@ -1206,17 +1206,18 @@ class Client:
         """Fetch one run by id → :class:`FlowRun`."""
         return FlowRun.from_api(self._http.get(f"{_FLOW_RUNS}/{run_id}"))
 
-    def flow_run_answers(self, run) -> dict:
-        """A completed run's DECRYPTED answers as ``{slug: plaintext}``.
+    def flow_run_answers(self, run) -> FlowRunAnswers:
+        """A completed run's DECRYPTED answers → :class:`FlowRunAnswers`.
 
         Accepts a :class:`FlowRun` or a run id (fetched via :meth:`flow_run`). The
-        public accessor for a finished run's answers; the private
-        :meth:`_decrypt_run_answers` it wraps is otherwise reached only inside
-        :meth:`process_flow_run`, which returns an already-completed run untouched,
-        so those answers were previously unreadable.
+        public accessor for a finished run's answers, which :meth:`process_flow_run`
+        returns untouched.
+
+        An answer the service key cannot open never fails the call: it is left out of
+        ``answers`` and its slug is listed in ``unreadable``.
         """
         flow_run = run if isinstance(run, FlowRun) else self.flow_run(run)
-        return self._decrypt_run_answers(flow_run)
+        return self._open_run_answers(flow_run, skip_unreadable=True)
 
     def flow_run_document(self, run_id: str, output_key: str) -> bytes:
         """Download the company's OWN copy of one output document a run generated — the
@@ -1262,12 +1263,24 @@ class Client:
         return self._svc_pub
 
     def _decrypt_run_answers(self, run: FlowRun) -> dict:
-        """Decrypt the company's service-key answer copies → ``{slug: plaintext}``.
+        """Decrypt the company's service-key answer copies → ``{slug: plaintext}``,
+        failing on the first answer that does not open.
+
+        Routing and generation read the run's whole answer set, so a missing answer there
+        would route or fill on a value that is not the run's.
+        """
+        return self._open_run_answers(run, skip_unreadable=False).answers
+
+    def _open_run_answers(self, run: FlowRun, *, skip_unreadable: bool) -> FlowRunAnswers:
+        """Open the company's service-key answer copies.
 
         Only the rows whose ``for_user_id`` is the company's bound user_id are
-        decryptable with the service private key; the person's copies are skipped.
+        decryptable with the service private key; the person's copies are skipped. With
+        ``skip_unreadable`` an answer that does not open (:class:`DecryptError`) is left
+        out and its slug listed in ``unreadable``; without it the error propagates.
         """
         out: dict = {}
+        unreadable: list = []
         for row in run.answers:
             if row.get("for_user_id") != run.service_user_id:
                 continue
@@ -1280,8 +1293,13 @@ class Client:
             if file_ref(v) is not None:
                 out[slug] = v if isinstance(v, str) else json.dumps(v)
                 continue
-            out[slug] = crypto_decrypt(v, self._private_key)
-        return out
+            try:
+                out[slug] = crypto_decrypt(v, self._private_key)
+            except DecryptError:
+                if not skip_unreadable:
+                    raise
+                unreadable.append(slug)
+        return FlowRunAnswers(answers=out, unreadable=unreadable)
 
     def _flow_person_public_key(self, run: FlowRun, uid: str, party_pubkeys: dict):
         """Resolve a person party's RSA public key for per-party answer encryption.

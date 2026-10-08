@@ -8,7 +8,7 @@ injected crypto core.
     RequestField { slug, label, type, one_time, mandatory, verified, verified_max_age_days, plugin }
     Connection   { id, person_id, display_name, connected_at, values: {<slug>: Value} }
     Value        { value, live, updated_at, verified, verified_at, verified_expires_at,
-                   verified_method, verified_provider, verification_id }
+                   verified_method, verified_provider, verification_id, unreadable }
     Change       { id, event, person_id, share_code?, slug?, value?, live?, at }   # id = stable dedup key
     LogEntry     { type, message, metadata, at }
 
@@ -312,6 +312,12 @@ class Value:
     ``live`` = the person chose "keep connected" (auto-updates) vs a one-time
     snapshot; ``updated_at`` = when this answer last changed. Both ride on the
     Value (per-answer), not the definition.
+
+    ``unreadable`` marks an answer that is present but could not be opened with the
+    configured service key — sealed to a key the service has since replaced, or a
+    wrong configured key. Such a value carries ``value`` None and ``verified`` False,
+    and never fails the read it arrived in. An unanswered value is ``value`` None
+    with ``unreadable`` False.
     """
 
     value: Any
@@ -332,6 +338,10 @@ class Value:
     verified_provider: Optional[str] = None
     verification_id: Optional[str] = None
     raw: dict = field(default_factory=dict, repr=False)
+    # True when the answer is present but could not be opened with the configured service
+    # key; ``value`` is then None and ``verified`` False. Every value of every connection
+    # reading True points at the configured key.
+    unreadable: bool = False
 
     @classmethod
     def from_api(
@@ -344,17 +354,27 @@ class Value:
         decrypt_value: DecryptValue,
         binary_fetch: Optional[BinaryFetch] = None,
     ) -> "Value":
-        """Build a typed Value from one hardened ``{value|value_url, live, updatedAt}`` entry."""
+        """Build a typed Value from one hardened ``{value|value_url, live, updatedAt}`` entry.
+
+        An entry whose value cannot be opened (:class:`DecryptError`) is built marked
+        ``unreadable``, with no plaintext; every other member is read from the entry as
+        for a readable one. Any other failure propagates.
+        """
         live = bool(_coerce_bool(obj.get("live")))
         updated_at = _parse_iso_dt(obj.get("updatedAt") or obj.get("updated_at"))
 
-        typed = _typed_value(
-            obj,
-            field_type=field_type,
-            field_types=field_types,
-            decrypt_value=decrypt_value,
-            binary_fetch=binary_fetch,
-        )
+        unreadable = False
+        try:
+            typed = _typed_value(
+                obj,
+                field_type=field_type,
+                field_types=field_types,
+                decrypt_value=decrypt_value,
+                binary_fetch=binary_fetch,
+            )
+        except DecryptError:
+            typed = None
+            unreadable = True
         return cls(
             value=typed,
             live=live,
@@ -366,6 +386,7 @@ class Value:
             verified_provider=obj.get("verified_provider"),
             verification_id=obj.get("verification_id"),
             raw=obj,
+            unreadable=unreadable,
         )
 
 
@@ -898,6 +919,20 @@ class FlowRun:
                 else None
             ),
         )
+
+
+@dataclass
+class FlowRunAnswers:
+    """A run's answers as the company's service key opens them.
+
+    ``answers`` holds every answer the key opened, ``{slug: plaintext}``; ``unreadable``
+    lists the slugs of the answers present on the run that it could not open (sealed to a
+    key the service has since replaced, or a wrong configured key), empty when every
+    answer opened. An unreadable slug is never in ``answers``.
+    """
+
+    answers: Dict[str, Any] = field(default_factory=dict)
+    unreadable: List[str] = field(default_factory=list)
 
 
 @dataclass

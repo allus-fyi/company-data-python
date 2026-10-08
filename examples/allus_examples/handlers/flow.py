@@ -384,7 +384,7 @@ class FlowHandlers:
         ciphers = _own_cipher_by_slug(flow_run)
         run["answers"] = [
             {"slug": str(slug), "value": jsonable(value), "cipher": jsonable(ciphers.get(str(slug)))}
-            for slug, value in answers.items()
+            for slug, value in answers.answers.items()
         ]
 
         if flow_run.output_mode == "document":

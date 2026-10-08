@@ -243,6 +243,7 @@ class CompanyDataHandlers:
                     "value": _stringify(v.value),
                     "live": v.live,
                     "at": _iso(v.updated_at),
+                    "unreadable": v.unreadable,
                 }
                 for slug, v in conn.values.items()
             ]

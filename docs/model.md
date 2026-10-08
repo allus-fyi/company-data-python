@@ -68,7 +68,16 @@ class Value:
     verified_provider: Optional[str]         # WHO established the proof: allme|sumsub
     verification_id: Optional[str]           # the proof id to quote back to allme in a dispute
     raw: dict
+    unreadable: bool                         # True = present but the service key cannot open it; value None, verified False
 ```
+
+**Not readable is not empty.** An unanswered value is `value` `None` with `unreadable` `False`; a
+value the configured service key cannot open (sealed to a key the service has since replaced, or a
+wrong configured key) is `value` `None` with `unreadable` `True`, and never fails the
+`connections`/`connection` read it arrived in. Its other members are read as for a readable value,
+with `verified` `False`. A binary value is a lazy handle and is never marked; its failure surfaces when
+its bytes are read. When every value of every connection reads `unreadable`, check the configured
+`service_private_key`.
 
 ### `value` types — from the type's RESOLVED definition
 
@@ -80,7 +89,7 @@ no SDK release.
 | The type's resolved… | Python `value` | Notes |
 |----------------------|----------------|-------|
 | storage lane `photo` / `document` | `BinaryHandle` | Lazy — nothing fetched/decrypted until `.bytes()`/`.pages()`/`.metadata()`/`.save()`. |
-| primitive `composite` | `dict` | The decrypted plaintext is a JSON object → parsed. A non-JSON value raises `DecryptError`. |
+| primitive `composite` | `dict` | The decrypted plaintext is a JSON object → parsed. A non-JSON value is a `DecryptError`: a `Value` reads `unreadable`, a change event raises it. |
 | primitive `date` | `datetime.date` | Parsed from ISO `YYYY-MM-DD` (the leading 10 chars); falls back to the raw string if unparseable. |
 | primitive `multilist` | `list` | The chosen option strings, parsed from the JSON array. |
 | anything else, and a type the registry does not carry | `str` | The decrypted plaintext. |

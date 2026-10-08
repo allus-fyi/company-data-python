@@ -156,7 +156,9 @@ reason. If you catch it, wait `err.retry_after` (or a default) before retrying.
 | `Client.from_config` / `from_env` | `ConfigError` |
 | Token / any call (auth) | `AuthError` |
 | `connections`, `connection`, `request_fields`, `logs`, pump drains | `ApiError`, `RateLimitError` |
-| Value access / `BinaryHandle.bytes()` / pump delivery | `DecryptError` |
+| `BinaryHandle.bytes()` / pump delivery / `parse_webhook` / flow-run routing and generation | `DecryptError` |
+| `connections`, `connection` (a value that cannot be opened) | none — the `Value` reads `unreadable` |
+| `flow_run_answers` (an answer that cannot be opened) | none — its slug is listed in `FlowRunAnswers.unreadable` |
 | `verify_webhook` / `parse_webhook` / `handle_webhook` | `WebhookError` (`verify_webhook` returns `False` rather than raising on a bad signature) |
 
 ## Example
@@ -178,7 +180,7 @@ except AuthError:
 except RateLimitError as e:
     sleep(e.retry_after or 60)
 except DecryptError:
-    ...            # wrong service key or corrupt data
+    ...            # a binary value's bytes could not be opened (wrong service key or corrupt data)
 except ApiError as e:
     log(e.status, e.error_key, e.message)
 ```
