@@ -12,7 +12,7 @@ wiped at startup; or under the directory ``EXAMPLE_RUNTIME_DIR`` names):
   (identity ``1``..``8``, flow ``flow_run``, company-data ``companydata_read`` …),
   so the three families never collide in the shared tree.
 * ``config/{key}.meta.json`` - demo-only run parameters that are not SDK Config
-  fields (authorize_base, one_time claims, share_code, context, flow id, …).
+  fields (one_time claims, share_code, context, flow id, …).
 * ``config/keys/<sha1>.pem`` - the private-key file(s) a config references by path
   (mode 0600); content-addressed, so scenarios sharing a key share the file.
 * ``runs/{runId}.json``      - one run's PKCE/state/nonce or accumulated result +

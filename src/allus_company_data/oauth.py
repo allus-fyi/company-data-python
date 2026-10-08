@@ -146,7 +146,7 @@ class OAuthClient:
         config: Config,
         session: Optional[requests.Session] = None,
         *,
-        authorize_url: str = DEFAULT_AUTHORIZE_URL,
+        authorize_url: Optional[str] = None,
         sleep=time.sleep,
     ) -> None:
         if not config.oauth_client_id or not config.oauth_redirect_uri:
@@ -157,7 +157,7 @@ class OAuthClient:
         # passed in, whose own default then applies.
         self._request_kwargs: dict = {} if session is not None else {"timeout": REQUEST_TIMEOUT}
         self._api_url = config.api_url.rstrip("/")
-        self._authorize_url = authorize_url
+        self._authorize_url = authorize_url or config.authorize_url or DEFAULT_AUTHORIZE_URL
         self._sleep = sleep
 
     @classmethod

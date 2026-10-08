@@ -44,6 +44,7 @@ _ENV_MAP = {
     "oauth_client_secret": "ALLUS_OAUTH_CLIENT_SECRET",
     "oauth_private_key": "ALLUS_OAUTH_PRIVATE_KEY",
     "oauth_key_passphrase": "ALLUS_OAUTH_KEY_PASSPHRASE",
+    "authorize_url": "ALLUS_AUTHORIZE_URL",
     "cache_dir": "ALLUS_CACHE_DIR",
     "format": "ALLUS_FORMAT",
 }
@@ -110,6 +111,8 @@ class Config:
     oauth_client_secret: Optional[str] = None
     oauth_private_key: Optional[str] = None
     oauth_key_passphrase: Optional[str] = None
+    # OPTIONAL — the hosted sign-in page the OAuth role builds its link on; absent means the live address.
+    authorize_url: Optional[str] = None
 
     # OPTIONAL — per-webhook HMAC secrets keyed by webhook id; matched via the
     # X-Allus-Webhook-Id header. A single-webhook service can use the flat

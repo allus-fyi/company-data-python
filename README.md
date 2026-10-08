@@ -1402,7 +1402,7 @@ Relying-party helper for the "Sign in with allme" identity flow. Config-only key
 ```python
 from allus_company_data import OAuthClient, Claim
 
-oauth = OAuthClient.from_config("idw-config.json")  # {api_url, oauth_client_id, oauth_redirect_uri, oauth_client_secret?, oauth_private_key?, oauth_key_passphrase?}
+oauth = OAuthClient.from_config("idw-config.json")  # {api_url, oauth_client_id, oauth_redirect_uri, oauth_client_secret?, oauth_private_key?, oauth_key_passphrase?, authorize_url?}
 url = oauth.authorize_url("signin", state="xyz", code_challenge=challenge)   # the button target
 # ...user approves; your redirect_uri receives ?code=...
 info = oauth.complete_sign_in(code, code_verifier=verifier)  # {user, mode, values(plaintext), values_cipher}
@@ -1411,6 +1411,10 @@ info = oauth.complete_sign_in(code, code_verifier=verifier)  # {user, mode, valu
 Modes: `signin` (identity), `one_time` (frozen claim values, decrypted for you), `connect` (a lasting connection),
 `2fa_enroll` (opt a person into 2FA — see below).
 `authorize_url(mode, claims=[Claim("email", "email", suggest="email_personal")])`; `poll_result(state)` for the detached response mode.
+
+**The sign-in address** is the optional `authorize_url` of the same config (env `ALLUS_AUTHORIZE_URL`).
+`authorize_url()` builds the button link on it, and on the live address `https://web.allme.fyi/auth` when it is absent.
+The `authorize_url=` constructor keyword stays and wins over the config value.
 
 **#498 — a claim IS a request field.** You describe what you need and the **person** picks which of their
 own fields answers it; you never name a field. A claim carries a mandatory unique `name` (everything

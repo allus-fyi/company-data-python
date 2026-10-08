@@ -26,7 +26,6 @@ from allus_company_data import (
     HttpClient,
     OAuthClient,
 )
-from allus_company_data.oauth import DEFAULT_AUTHORIZE_URL
 
 from .. import pkce
 from ..common import (
@@ -83,11 +82,7 @@ NO_STORED_ORIGIN = (
 # that no longer matches the code is worse than a short one.
 CALL_IDW_BUILD = (
     "OAuthClient.from_config — builds the RP client from the saved config file: "
-    "client id, secret and the registered redirect URI"
-)
-CALL_IDW_BUILD_LOCAL = (
-    "OAuthClient(Config.from_idw_file(…)) — builds the RP client from the saved config file: "
-    "client id, secret and the registered redirect URI"
+    "client id, secret, the registered redirect URI and the sign-in address"
 )
 CALL_AUTH_SIGNIN = (
     "OAuthClient.authorize_url — the consent URL the person is sent to "
@@ -219,6 +214,9 @@ class IdentityHandlers:
         secret = str(data.get("oauthClientSecret") or "")
         if secret:
             cfg["oauth_client_secret"] = secret
+        authorize_url = str(data.get("authorizeBase") or "")
+        if authorize_url and scenario_id in OAUTH_URL_SCENARIOS:
+            cfg["authorize_url"] = authorize_url
 
         # Any scenario whose run can carry claim values (CLAIM_VALUE_SCENARIOS) needs the OAuth
         # app private key to decrypt them.
@@ -243,8 +241,6 @@ class IdentityHandlers:
 
         # Demo-only run parameters (NOT SDK Config fields) -> meta sidecar.
         meta: Dict[str, Any] = {}
-        if scenario_id in OAUTH_URL_SCENARIOS:
-            meta["authorize_base"] = str(data.get("authorizeBase") or "") or DEFAULT_AUTHORIZE_URL
         if scenario_id == 3:
             meta["claims"] = _claims(data)
         if scenario_id == 8:
@@ -274,7 +270,7 @@ class IdentityHandlers:
             mode = {1: "signin", 3: "one_time", 4: "connect"}[scenario_id]
             claims = _claim_objects(self.rt.read_config_meta(scenario_id).get("claims") or []) \
                 if scenario_id == 3 else None
-            run["calls"] = [self._idw_build_call(scenario_id), {3: CALL_AUTH_ONE_TIME, 4: CALL_AUTH_CONNECT}.get(
+            run["calls"] = [CALL_IDW_BUILD, {3: CALL_AUTH_ONE_TIME, 4: CALL_AUTH_CONNECT}.get(
                 scenario_id, CALL_AUTH_SIGNIN)]
             oauth = self._oauth_client_for(scenario_id)
             url = oauth.authorize_url(
@@ -287,7 +283,7 @@ class IdentityHandlers:
             verifier, challenge = pkce.generate()
             run["verifier"] = verifier
             run["wait"] = "detached_signin"
-            run["calls"] = [self._idw_build_call(scenario_id), CALL_AUTH_SIGNIN_DETACHED]
+            run["calls"] = [CALL_IDW_BUILD, CALL_AUTH_SIGNIN_DETACHED]
             oauth = self._oauth_client_for(scenario_id)
             url = oauth.authorize_url(
                 "signin", state=run_id, response_mode="detached", code_challenge=challenge,
@@ -342,7 +338,7 @@ class IdentityHandlers:
         run = {
             "scenario": 8, "isEnroll": True, "status": "pending", "state": run_id,
             "calls": [
-                self._idw_build_call(scenario_id),
+                CALL_IDW_BUILD,
                 CALL_AUTH_ENROLL_DETACHED if response_mode == "detached" else CALL_AUTH_ENROLL,
             ],
             "wait": "detached_enroll" if response_mode == "detached" else "enroll_redirect",
@@ -506,7 +502,7 @@ class IdentityHandlers:
 
         access_token = str(out.get("access_token") or "")
         if access_token:
-            run["calls"] = add_call(run.get("calls"), self._idw_build_call(scenario_id))
+            run["calls"] = add_call(run.get("calls"), CALL_IDW_BUILD)
             oauth = self._oauth_client_for(scenario_id)
             run["calls"] = add_call(run.get("calls"), CALL_OIDC_USERINFO)
             try:
@@ -536,23 +532,7 @@ class IdentityHandlers:
         kwargs: Dict[str, Any] = {}
         if poll_timeout is not None:
             kwargs["session"] = TimeoutSession(poll_timeout)
-        if not self._uses_default_authorize_base(scenario_id):
-            # Non-default authorize base (local-stack option): still load Config from the file, just
-            # supply the alternate consent host the from_config wrapper cannot set.
-            base = str(self.rt.read_config_meta(scenario_id).get("authorize_base") or "")
-            return OAuthClient(Config.from_idw_file(path), authorize_url=base, **kwargs)
         return OAuthClient.from_config(path, **kwargs)
-
-    def _uses_default_authorize_base(self, scenario_id: int) -> bool:
-        """Whether ``_oauth_client_for`` takes the named-constructor branch. The SAME predicate
-        decides the client AND the trace entry, so the panel can never name a constructor that did
-        not run — the local-stack option really does build the client a different way."""
-        base = str(self.rt.read_config_meta(scenario_id).get("authorize_base") or "")
-        return not base or base == DEFAULT_AUTHORIZE_URL
-
-    def _idw_build_call(self, scenario_id: int) -> str:
-        """The trace entry for the OAuth client ``_oauth_client_for`` just built."""
-        return CALL_IDW_BUILD if self._uses_default_authorize_base(scenario_id) else CALL_IDW_BUILD_LOCAL
 
     def _service_client_for(self, scenario_id: int, poll_timeout: Optional[float] = None) -> Client:
         path = self.rt.config_path_for(scenario_id)
