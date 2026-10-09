@@ -228,7 +228,12 @@ class CustomerClient:
         self, connection_id: str, service_link_id: str, answers: List[dict],
         *, company_code: str, service_code: str,
     ) -> Any:
-        """Re-type + re-encrypt already-answered mappings (``PUT .../mappings``)."""
+        """Re-type + re-encrypt already-answered mappings (``PUT .../mappings``).
+
+        ``answers`` is the WHOLE answer set: a row the edit sends nothing for is withdrawn. An
+        entry ``{request_field_id, kind: "keep"}`` (no ``value``) keeps that row's stored answer as
+        it is; the API accepts it only for a row that holds an answer now.
+        """
         decisions = self._encrypt_typed(answers, company_code, service_code)
         return self._http.put(
             f"{_CONN}/{connection_id}/services/{service_link_id}/mappings",
@@ -654,6 +659,10 @@ class CustomerClient:
         types = self._request_field_types(company_code, service_code)
         out: List[dict] = []
         for a in answers:
+            # A kept row carries no value: nothing to validate or encrypt.
+            if a.get("kind") == "keep":
+                out.append({"request_field_id": a["request_field_id"], "kind": "keep"})
+                continue
             plain = str(a["value"])
             ftype = types.get(str(a["request_field_id"]))
             if ftype and not self.field_types().is_field_value_valid(ftype, plain):
