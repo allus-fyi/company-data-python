@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from allus_company_data import (
     ApiError,
+    AuthError,
     Claim,
     Client,
     Config,
@@ -402,18 +403,17 @@ class IdentityHandlers:
 
     def _advance(self, run: Dict[str, Any]) -> Dict[str, Any]:
         """Short-cycled advance for a pending detached / challenge run: ONE SDK wait
-        with ``timeout=2``. An SDK logical timeout stays pending; a real transport
-        failure fails the run. Clients are rebuilt from the scenario's config file."""
+        with ``timeout=2``. A poll that got no HTTP response, or a 503, stays pending;
+        any other error fails the run. Clients are rebuilt from the scenario's config file."""
         wait = run.get("wait")
         scenario_id = int(run.get("scenario") or 0)
+        signin_code = ""
         try:
             if wait == "detached_signin":
                 run["calls"] = add_call(run.get("calls"), CALL_POLL_SIGNIN)
                 oauth = self._oauth_client_for(scenario_id, POLL_TIMEOUT_S)
                 body = oauth.poll_result(str(run["state"]), timeout=2, interval=2)
-                code = str(body.get("code") or "")
-                if code:
-                    run = self._complete_signin(run, code)
+                signin_code = str(body.get("code") or "")
             elif wait == "detached_enroll":
                 run["calls"] = add_call(run.get("calls"), CALL_POLL_ENROLL)
                 oauth = self._oauth_client_for(scenario_id, POLL_TIMEOUT_S)
@@ -429,17 +429,32 @@ class IdentityHandlers:
                 run["result"] = {"status": res.status, "completed_at": res.completed_at}
             # else (redirect / continue-on-phone): completion arrives via /callback — stay pending.
         except ApiError as exc:
-            # The SDK poll helpers signal a LOGICAL "not completed within {n}s" timeout as
-            # ApiError(0, ...) with that sentinel message. A real transport failure ALSO surfaces
-            # as ApiError(0, ...), so match the SDK's sentinel: only the logical timeout is still
-            # pending; a real network/transport failure fails the run.
-            if exc.status == 0 and "not completed within" in (exc.message or str(exc)):
+            # A poll that never received an HTTP response (ApiError status 0: the SDK's logical
+            # "not completed within" timeout, a transport timeout or a connection failure) or that
+            # was answered 503 leaves the run pending; the next browser poll retries. Any other
+            # status is an answer another poll cannot change.
+            if exc.status in (0, 503):
+                return run
+            run["status"] = "failed"
+            run["error"] = str(exc)
+        except AuthError as exc:
+            # The token request failed before any HTTP response arrived: pending. A token request
+            # the platform refused ("token request rejected …") ends the run.
+            if str(exc).startswith("token request failed:"):
                 return run
             run["status"] = "failed"
             run["error"] = str(exc)
         except Exception as exc:  # noqa: BLE001
             run["status"] = "failed"
             run["error"] = str(exc)
+        # The delivered code is one-shot, so completing the sign-in is outside the retry rule above: a
+        # failure here ends the run instead of re-polling a result that is already consumed.
+        if signin_code:
+            try:
+                run = self._complete_signin(run, signin_code)
+            except Exception as exc:  # noqa: BLE001
+                run["status"] = "failed"
+                run["error"] = str(exc)
         return run
 
     # ── SDK / OIDC completion helpers ─────────────────────────────────────────
