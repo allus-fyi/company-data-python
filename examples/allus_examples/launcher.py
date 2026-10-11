@@ -201,23 +201,17 @@ def main() -> None:
     _contract_guard(frontend)
 
     port = int(os.environ.get("PORT") or 8091)
-    # Refuse a busy port with a clear message — probe the SAME address the server binds
-    # (all interfaces), not just loopback.
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    rt = Runtime(BASE_DIR)
+    srv = Server(rt, frontend, _sdk_version())
+    # ALL interfaces, so a phone on the same network can reach it. The server's own bind is
+    # the busy-port check, so a refusal happens exactly when serving would fail.
     try:
-        probe.bind(("0.0.0.0", port))
+        httpd = ThreadingHTTPServer(("0.0.0.0", port), _make_handler(srv))
     except OSError:
         _fail(
             f"port {port} is busy. Set PORT=<n> to use another port "
             "(one browser origin is shared across SDK examples, so only one runs at a time)."
         )
-    finally:
-        probe.close()
-
-    rt = Runtime(BASE_DIR)
-    srv = Server(rt, frontend, _sdk_version())
-    # ALL interfaces, so a phone on the same network can reach it.
-    httpd = ThreadingHTTPServer(("0.0.0.0", port), _make_handler(srv))
     _print_reachable_urls(port)
     try:
         httpd.serve_forever()
