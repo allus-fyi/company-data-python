@@ -826,15 +826,30 @@ class Client:
         return doc
 
     def list_documents(self, *, person_user_id: Optional[str] = None,
-                       status: Optional[str] = None, limit: int = 100, offset: int = 0):
-        """List this service's documents → ``list[Document]`` (paged; optional person/status filter)."""
-        params: dict = {"limit": max(1, int(limit)), "offset": max(0, int(offset))}
+                       status: Optional[str] = None, limit: int = 100) -> Iterator[Document]:
+        """Every document of this service, newest first → a lazy generator of :class:`Document`
+        (optional person/status filter).
+
+        Pages ``GET /api/company-data/documents`` with its cursor: ``limit`` is the page size
+        (1–500), and each page's ``next`` marker is sent back as ``after`` until a page answers
+        none. A page is fetched only once the previous one has been consumed.
+        """
+        params: dict = {"limit": min(500, max(1, int(limit)))}
         if person_user_id:
             params["person_user_id"] = person_user_id
         if status:
             params["status"] = status
-        body = self._http.get(_DOCUMENTS, params=params)
-        return Document.list_from_api(body, decrypt_value=self._decrypt_value)
+        after: Optional[str] = None
+        while True:
+            page = dict(params)
+            if after:
+                page["after"] = after
+            body = self._http.get(_DOCUMENTS, params=page)
+            yield from Document.list_from_api(body, decrypt_value=self._decrypt_value)
+            nxt = body.get("next") if isinstance(body, dict) else None
+            if not isinstance(nxt, str) or nxt == "":
+                return
+            after = nxt
 
     def document(self, document_id: str) -> Document:
         """Fetch one document by id → :class:`Document`."""

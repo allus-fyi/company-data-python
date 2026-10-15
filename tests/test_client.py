@@ -865,7 +865,7 @@ def test_document_verbs_hit_right_path(config):
 
     def get_router(url, params):
         if url.endswith("/documents"):
-            return FakeResponse(200, json_body={"total": 0, "items": []})
+            return FakeResponse(200, json_body={"items": [], "next": None})
         if "/documents/d9" in url:
             return FakeResponse(200, json_body={"id": "d9", "payload_kind": "json",
                                                 "is_private": False, "value": {"a": 1}})
@@ -878,7 +878,7 @@ def test_document_verbs_hit_right_path(config):
                                             "status": "ended"})
 
     client, _ = _client_rw(config, get_router, write_router)
-    assert client.list_documents(status="active") == []
+    assert list(client.list_documents(status="active")) == []
     assert client.document("d9").id == "d9"
     client.update_document_status("d9", "ended")
     client.update_document_metadata("d9", name="renamed")

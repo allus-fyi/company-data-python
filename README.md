@@ -871,7 +871,7 @@ with open("agreement.pdf", "rb") as fh:
 ### Listing, reading, updating, deleting
 
 ```python
-list_documents(*, person_user_id=None, status=None, limit=100, offset=0) -> list[Document]
+list_documents(*, person_user_id=None, status=None, limit=100)        -> Iterator[Document]
 document(document_id)                                                     -> Document
 document_file(document_id)                                                -> bytes    # #491: the file BYTES
 flow_run_document(run_id, output_key)                                     -> bytes    # the run's OWN (service-key) copy of one output document
@@ -882,7 +882,9 @@ delete_document(document_id)                                            -> None
 ```
 
 ```python
-# All this service's documents (optionally filter by person and/or status).
+# All this service's documents, newest first (optionally filter by person and/or status).
+# A lazy generator: it pages GET /api/company-data/documents with its cursor (`limit` is
+# the page size, 1–500) and fetches the next page only once this one is consumed.
 for doc in client.list_documents(status="offering"):
     print(doc.id, doc.name, doc.status, doc.payload_kind, "private" if doc.is_private else "shared")
 
