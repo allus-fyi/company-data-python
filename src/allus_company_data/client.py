@@ -4,9 +4,9 @@ The one object an integrating company touches. Build it from config (the keys
 live there and nowhere else), then call:
 
     client.request_fields()          -> cached list[RequestField]  (slug -> meta)
-    client.connections(limit, offset)-> lazy generator of Connection (auto-paged)
+    client.connections(limit)        -> lazy generator of Connection (auto-paged)
     client.connection(id)            -> one Connection
-    client.logs(limit, offset)       -> list[LogEntry]
+    client.logs(limit)               -> lazy generator of LogEntry (auto-paged)
     client.process_changes(handler)  -> the crash-safe pump
     client.drain_batch(max)          -> raw unbuffered drain (advanced)
     client.dead_letters() / client.retry_dead_letters(handler)
@@ -115,6 +115,9 @@ _KEYS = "/api/keys"
 # rate-limited, so we keep pages reasonably large to minimize
 # the number of requests for a full sync, while the iterator stays lazy.
 _DEFAULT_CONN_PAGE = 100
+
+# Page size flow_runs() reads the run list with (the list's maximum).
+_FLOW_RUN_PAGE = 500
 
 # Bounded extra backoff for the connections iterator on a surfaced 429. The
 # HttpClient already retries a 429 internally; if it still surfaces a
@@ -406,15 +409,15 @@ class Client:
 
     # ── connections (heavily rate-limited — initial sync / reconciliation) ─────
 
-    def connections(
-        self, limit: int = _DEFAULT_CONN_PAGE, offset: int = 0
-    ) -> Iterator[Connection]:
+    def connections(self, limit: int = _DEFAULT_CONN_PAGE) -> Iterator[Connection]:
         """A lazy generator paging the list endpoint, yielding one Connection at a time.
 
-        ``limit`` is the page size; ``offset`` the starting offset. The generator
-        auto-pages ``GET /api/company-data/connections?limit&offset`` and yields
-        typed :class:`Connection` objects (each ``values[slug]`` already decrypted
-        / a lazy binary handle) one at a time — bounded memory for a large book.
+        ``limit`` is the page size. The generator pages
+        ``GET /api/company-data/connections`` with its cursor — each page's ``next``
+        marker is sent back as ``after`` until a page answers none — and yields typed
+        :class:`Connection` objects (each ``values[slug]`` already decrypted / a lazy
+        binary handle) one at a time — bounded memory for a large book. A page is
+        fetched only once the previous one has been consumed.
 
         The connections endpoints are **heavily rate-limited**:
         use this for the initial full sync + occasional reconciliation, never as a
@@ -424,16 +427,13 @@ class Client:
         paces itself within the limit rather than hammering.
         """
         page = max(1, int(limit))
-        cur = max(0, int(offset))
         # Ensure the slug catalog is loaded so values are typed correctly.
         self.request_fields()
 
+        after: Optional[str] = None
         while True:
-            body = self._get_connections_page(page, cur)
-            items = _list_items(body)
-            if not items:
-                return
-            for obj in items:
+            body = self._get_connections_page(page, after)
+            for obj in _list_items(body):
                 if not isinstance(obj, dict):
                     continue
                 yield Connection.from_api(
@@ -446,27 +446,26 @@ class Client:
                     # the values map, so the same object is both detail + identity.
                     identity=obj,
                 )
-            # A short page means we reached the end (no more rows than asked for).
-            if len(items) < page:
+            after = _next_marker(body)
+            if after is None:
                 return
-            cur += page
 
-    def _get_connections_page(self, page: int, offset: int) -> Any:
+    def _get_connections_page(self, page: int, after: Optional[str]) -> Any:
         """GET one connections page, backing off on a surfaced 429."""
+        params: dict = {"limit": page}
+        if after is not None:
+            params["after"] = after
         attempts = 0
         while True:
             try:
-                return self._http.get(
-                    _CONNECTIONS, params={"limit": page, "offset": offset}
-                )
+                return self._http.get(_CONNECTIONS, params=params)
             except RateLimitError as exc:
                 attempts += 1
                 if attempts > _CONN_MAX_429_BACKOFFS:
                     raise
                 delay = _conn_backoff(exc.retry_after, attempts)
                 self._log.warning(
-                    "connections rate-limited (offset=%d); backoff %.1fs (attempt %d)",
-                    offset,
+                    "connections rate-limited; backoff %.1fs (attempt %d)",
                     delay,
                     attempts,
                 )
@@ -509,16 +508,24 @@ class Client:
 
     # ── logs (moderate rate-limit) ──────────────────────────────────────────────
 
-    def logs(self, limit: int = 50, offset: int = 0) -> List[LogEntry]:
-        """The service's activity log → ``list[LogEntry]``.
+    def logs(self, limit: int = 50) -> Iterator[LogEntry]:
+        """The service's activity log, newest first → a lazy generator of :class:`LogEntry`.
 
-        ``GET /api/company-data/logs?limit&offset``. Ops events only (email /
-        purge / webhook) — never person field data.
+        Pages ``GET /api/company-data/logs`` with its cursor: ``limit`` is the page size
+        (1–200), and each page's ``next`` marker is sent back as ``after`` until a page
+        answers none. Ops events only (email / purge / webhook) — never person field data.
         """
-        body = self._http.get(
-            _LOGS, params={"limit": max(1, int(limit)), "offset": max(0, int(offset))}
-        )
-        return LogEntry.list_from_api(body)
+        params: dict = {"limit": min(200, max(1, int(limit)))}
+        after: Optional[str] = None
+        while True:
+            page = dict(params)
+            if after is not None:
+                page["after"] = after
+            body = self._http.get(_LOGS, params=page)
+            yield from LogEntry.list_from_api(body)
+            after = _next_marker(body)
+            if after is None:
+                return
 
     # ── changes feed — the crash-safe pump ──────────────────────────────────────
 
@@ -846,10 +853,9 @@ class Client:
                 page["after"] = after
             body = self._http.get(_DOCUMENTS, params=page)
             yield from Document.list_from_api(body, decrypt_value=self._decrypt_value)
-            nxt = body.get("next") if isinstance(body, dict) else None
-            if not isinstance(nxt, str) or nxt == "":
+            after = _next_marker(body)
+            if after is None:
                 return
-            after = nxt
 
     def document(self, document_id: str) -> Document:
         """Fetch one document by id → :class:`Document`."""
@@ -1207,15 +1213,27 @@ class Client:
         ).wrapper
 
     def flow_runs(self, *, status: Optional[str] = "awaiting_company") -> List[FlowRun]:
-        """List this service's runs. Default ``awaiting_company`` = the actionable queue.
+        """List this service's runs, newest first. Default ``awaiting_company`` = the actionable queue.
 
         Pass ``status=None`` for all runs, or any status filter
         (``awaiting_<party>`` / ``generating`` / ``awaiting_signature`` /
-        ``completed`` / ``cancelled``).
+        ``completed`` / ``cancelled``). Every page of ``GET /api/company-data/flow-runs``
+        is read, following its cursor (``next`` sent back as ``after``) until a page
+        answers none.
         """
-        params = {"status": status} if status else None
-        body = self._http.get(_FLOW_RUNS, params=params)
-        return [FlowRun.from_api(o) for o in _list_items(body)]
+        runs: List[FlowRun] = []
+        after: Optional[str] = None
+        while True:
+            params: dict = {"limit": _FLOW_RUN_PAGE}
+            if status:
+                params["status"] = status
+            if after is not None:
+                params["after"] = after
+            body = self._http.get(_FLOW_RUNS, params=params)
+            runs.extend(FlowRun.from_api(o) for o in _list_items(body))
+            after = _next_marker(body)
+            if after is None:
+                return runs
 
     def flow_run(self, run_id: str) -> FlowRun:
         """Fetch one run by id → :class:`FlowRun`."""
@@ -1728,7 +1746,7 @@ def _broadcast_original_name(file_name: Optional[str], name: str, file_mime: Opt
 
 
 def _list_items(body: Any) -> List[Any]:
-    """Pull the ``items`` array out of a ``{total, items}`` list response."""
+    """Pull the ``items`` array out of a ``{items, next}`` list response."""
     if isinstance(body, dict):
         items = body.get("items")
         if items is None:
@@ -1737,6 +1755,15 @@ def _list_items(body: Any) -> List[Any]:
     if isinstance(body, list):
         return body
     return []
+
+
+def _next_marker(body: Any) -> Optional[str]:
+    """A cursor-paged list response's ``next`` marker, or None on the last page.
+
+    An empty string — what an XML response carries for a null ``next`` — is the last page too.
+    """
+    nxt = body.get("next") if isinstance(body, dict) else None
+    return nxt if isinstance(nxt, str) and nxt != "" else None
 
 
 def _conn_backoff(retry_after: Optional[float], attempt: int) -> float:

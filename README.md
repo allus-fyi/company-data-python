@@ -195,17 +195,20 @@ for f in client.request_fields():
     print(f"{f.slug:20} {f.type:10} {flag}{' (one-time)' if f.one_time else ''}")
 ```
 
-### `connections(limit, offset)`
+### `connections(limit)`
 
 ```python
-connections(limit: int = 100, offset: int = 0) -> Iterator[Connection]
+connections(limit: int = 100) -> Iterator[Connection]
 ```
 
-A **lazy generator** that auto-pages `GET /api/company-data/connections?limit&offset`
-and yields one typed `Connection` at a time (bounded memory for a large book).
+A **lazy generator** that pages `GET /api/company-data/connections`, newest connection
+first, following the list's cursor — each page's `next` marker is sent back as `after`
+until a page answers none — and yields one typed `Connection` at a time (bounded memory
+for a large book). A page is fetched only once the previous one has been consumed; a page
+costs the platform the same at any depth, and the list carries no total.
 Each `conn.values[slug]` is already decrypted (or a lazy binary handle).
 
-* **Params:** `limit` — page size (default 100); `offset` — starting offset.
+* **Params:** `limit` — page size (default 100, max 500).
 * **Returns:** `Iterator[Connection]`.
 * **Raises:** `AuthError`, `ApiError`, `RateLimitError` (after the iterator's bounded internal backoff — see [Rate limits](#rate-limits)).
 * **A value the service key cannot open never ends the listing.** It is returned in its own place with `value` `None` and `unreadable` `True` (see [`Value`](#value)), and every other value and connection is returned as usual. When every value of every connection reads `unreadable`, check the configured `service_private_key`.
@@ -254,17 +257,18 @@ End one of this service's connections (`DELETE /api/company-data/connections/{id
 client.delete_connection(conn_id)
 ```
 
-### `logs(limit, offset)`
+### `logs(limit)`
 
 ```python
-logs(limit: int = 50, offset: int = 0) -> list[LogEntry]
+logs(limit: int = 50) -> Iterator[LogEntry]
 ```
 
-The service's activity log (`GET /api/company-data/logs?limit&offset`) — **ops
-events only** (email / purge / webhook), never person field data.
+The service's activity log, newest first (`GET /api/company-data/logs`) — **ops
+events only** (email / purge / webhook), never person field data. A **lazy generator**
+following the list's cursor (`next` sent back as `after`) until a page answers none.
 
-* **Params:** `limit` (default 50), `offset` (default 0).
-* **Returns:** `list[LogEntry]` — each `LogEntry(type, message, metadata, at, raw)`.
+* **Params:** `limit` — page size (default 50, max 200).
+* **Returns:** `Iterator[LogEntry]` — each `LogEntry(type, message, metadata, at, raw)`.
 * **Raises:** `AuthError`, `ApiError`, `RateLimitError`.
 
 ```python
@@ -1077,7 +1081,7 @@ identity()                                                    -> dict           
 
 * `trigger_flow_run(flow_id, connection_id=..., bindings={...})` starts a run bound to a connection and the flow's other parties, pinning the flow's latest **published** version.
 * `trigger_flow_run` reads the flow's latest published version first (`published_flow(flow_id)` — its `version`, `definition` and the service's request-field types) and sends it as `flow_version`. When that version's text elements show the customer's shared values (`{{party.field}}` tags), it opens those values from the connection with the service key and seals them per recipient — ONE wrapper of the non-private values, and each private value on its own — to the company (the service key) and to the customer, and sends them as `tag_values`; the connection's `values_private` decides which values are private (a slug it does not name is private). A newer publish in between (`flows.version_changed`) is re-read and retried once; a customer key that changed (`flows.tag_values_stale`) is re-read and retried once; a stale SERVICE key raises a `ConfigError` — rebuild the client with the service's current private key. The run carries `owner_tag_values` (the owning company's profile values the text names, plaintext) and `tag_values` (the company's sealed set).
-* `flow_runs(status=...)` / `flow_run(run_id)` list / fetch runs. `status=None` returns everything; the default `"awaiting_company"` is the actionable queue.
+* `flow_runs(status=...)` / `flow_run(run_id)` list / fetch runs. `flow_runs` reads every page of the run list, newest first, following its cursor. `status=None` returns everything; the default `"awaiting_company"` is the actionable queue.
 * `flow_run_answers(run)` — a run's answers as a `FlowRunAnswers`, reading the company's service-key answer copies: `.answers` is the **decrypted** `{slug: plaintext}` map, `.unreadable` the list of slugs whose answer the service key could not open (empty when every answer opened). An unreadable answer is left out of `.answers` and never fails the call. Accepts a loaded `FlowRun` or a run id (fetched via `flow_run`).
 * `submit_flow_answers` / `generate_flow_document` / `process_flow_run` fill the company's current node, advance the run (encrypting one answer copy per bound party), and — at a document-mode leaf — generate its output documents. See the method docstrings for the full per-party encryption details.
 * `generate_flow_document(run)` returns `{"documents": [...], "status": ...}` — one `{output_key, party_key, document_id, position}` per produced (output document, participant). A leaf can produce several named output documents (e.g. "Contract" and "Addendum"); `position` is the step's 1-based place in the run's ONE signing line (one signer at a time, across every output), `None` for a party an output's signer list does not name. A repeat answers the same set.

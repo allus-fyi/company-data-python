@@ -12,14 +12,15 @@ Covered:
 * request_fields() parses + CACHES (exactly one HTTP catalog fetch even when
   connections()/changes need the slug→type map);
 * connections() is a LAZY generator yielding typed Connections with decrypted,
-  slug-keyed values; it auto-pages and stops on a short page;
+  slug-keyed values; it follows the list's cursor (``next`` sent back as ``after``)
+  and stops on a page that answers none;
 * a binary value is a lazy BinaryHandle whose .bytes() GETs the slot endpoint and
   serves the file bytes from EITHER 200 shape: the encrypted
   {"encrypted":true,"value":...} → decrypt → the vector's inner bytes, or a plaintext
   answer's raw bytes under the file's own Content-Type (with its digest header);
   and a 410 file_expired carries content_sha256/expired_at on ApiError.details;
 * connection(id) builds one Connection;
-* logs() deserializes the {total, items} shape;
+* logs() deserializes the {items, next} shape and follows its cursor;
 * process_changes() drains the fake feed through the pump one-by-one (and the
   feed's drain-on-fetch is modeled — each fetch returns then empties).
 """
@@ -226,7 +227,6 @@ def test_connections_yields_typed_decrypted(config, vector):
     addr_wrapper = _encrypt_for_key(vector, json.dumps({"city": "Utrecht", "country": "NL"}))
 
     page1 = {
-        "total": 2,
         "items": [
             {
                 "connection_id": "csc-1",
@@ -251,7 +251,7 @@ def test_connections_yields_typed_decrypted(config, vector):
         if url.endswith("/request-fields"):
             return FakeResponse(200, json_body=_REQUEST_FIELDS_BODY)
         if url.endswith("/connections"):
-            # One full-but-short page (1 < limit) → generator stops after it.
+            # One page whose `next` is null → generator stops after it.
             return FakeResponse(200, json_body=page1)
         raise AssertionError("unexpected GET " + url)
 
@@ -279,14 +279,14 @@ def test_connections_yields_typed_decrypted(config, vector):
 
 
 def test_connections_auto_pages(config):
-    """A full page triggers the next page; a short/empty page ends the iteration."""
+    """A page carrying `next` triggers the next page with that marker as `after`; a null `next` ends it."""
     def make_item(i):
         return {"connection_id": f"c{i}", "user_id": f"p{i}", "display_name": f"N{i}",
                 "values": {}}
 
     pages = [
-        {"total": 3, "items": [make_item(1), make_item(2)]},  # full page (==limit 2)
-        {"total": 3, "items": [make_item(3)]},                 # short page → stop
+        {"items": [make_item(1), make_item(2)], "next": "m1"},
+        {"items": [make_item(3)], "next": None},
     ]
     state = {"i": 0}
 
@@ -302,9 +302,10 @@ def test_connections_auto_pages(config):
     client, session = _client(config, router)
     ids = [c.id for c in client.connections(limit=2)]
     assert ids == ["c1", "c2", "c3"]
-    # Two connections pages fetched (offset 0 then 2), then stopped on the short page.
+    # Two connections pages fetched — the first with no marker, the second after "m1" — then stopped.
     conn_gets = [g for g in session.gets if g["url"].endswith("/connections")]
-    assert [g["params"]["offset"] for g in conn_gets] == [0, 2]
+    assert [g["params"].get("after") for g in conn_gets] == [None, "m1"]
+    assert all("offset" not in g["params"] for g in conn_gets)
 
 
 # ── binary handle fetches the slot endpoint + decrypts ─────────────────────────
@@ -312,7 +313,6 @@ def test_connections_auto_pages(config):
 
 def test_binary_handle_fetches_slot_and_decrypts(config, vector):
     page = {
-        "total": 1,
         "items": [{
             "connection_id": "csc-1", "user_id": "person-1", "display_name": "Anna",
             "values": {"logo": {
@@ -352,7 +352,6 @@ def test_binary_handle_serves_plaintext_bytes(config):
     Content-Type. The handle returns them as-is (no decrypt, no envelope) and exposes
     the platform's X-Allus-Content-Sha256 digest for the bytes it received."""
     page = {
-        "total": 1,
         "items": [{
             "connection_id": "csc-1", "user_id": "person-1", "display_name": "Anna",
             "values": {"logo": {
@@ -421,7 +420,6 @@ def test_binary_handle_expired_answer_carries_digest(config):
     """A 410 file_expired surfaces the digest and the expiry date through
     ApiError.details (generic, not a bespoke exception type)."""
     page = {
-        "total": 1,
         "items": [{
             "connection_id": "csc-1", "user_id": "person-1", "display_name": "Anna",
             "values": {"logo": {
@@ -481,27 +479,38 @@ def test_connection_by_id(config, vector):
 
 
 def test_logs_deserialize(config):
-    body = {
-        "total": 2,
-        "items": [
-            {"type": "email", "message": "stale-queue alert", "metadata": {"days": 3},
-             "created_at": "2026-06-17T06:00:00Z"},
-            {"type": "purge", "message": "purged 4", "metadata": {"count": 4},
-             "created_at": "2026-06-17T07:00:00Z"},
-        ],
-    }
+    pages = [
+        {
+            "items": [
+                {"type": "email", "message": "stale-queue alert", "metadata": {"days": 3},
+                 "created_at": "2026-06-17T06:00:00Z"},
+            ],
+            "next": "m1",
+        },
+        {
+            "items": [
+                {"type": "purge", "message": "purged 4", "metadata": {"count": 4},
+                 "created_at": "2026-06-17T07:00:00Z"},
+            ],
+            "next": None,
+        },
+    ]
+    state = {"i": 0}
 
     def router(url, params):
         if url.endswith("/logs"):
+            body = pages[state["i"]]
+            state["i"] += 1
             return FakeResponse(200, json_body=body)
         raise AssertionError("unexpected GET " + url)
 
     client, session = _client(config, router)
-    logs = client.logs(limit=50)
+    logs = list(client.logs(limit=50))
     assert len(logs) == 2
     assert all(isinstance(e, LogEntry) for e in logs)
     assert logs[0].type == "email"
     assert logs[0].metadata == {"days": 3}
+    assert [g["params"].get("after") for g in session.gets] == [None, "m1"]
     assert session.gets[0]["params"]["limit"] == 50
 
 

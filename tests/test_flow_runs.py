@@ -141,14 +141,21 @@ def test_trigger_flow_run(config):
 
 
 def test_flow_runs_default_awaiting_company(config):
+    seen = []
+
     def get_router(url, params):
         assert url.endswith("/company-data/flow-runs")
-        assert params == {"status": "awaiting_company"}
-        return FakeResponse(200, json_body={"total": 1, "items": [_run_obj()]})
+        seen.append(dict(params))
+        if "after" not in params:
+            return FakeResponse(200, json_body={"items": [_run_obj()], "next": "m1"})
+        return FakeResponse(200, json_body={"items": [_run_obj()], "next": None})
 
     client, _ = _client_rw(config, get_router, lambda *a: None)
     runs = client.flow_runs()
-    assert len(runs) == 1 and runs[0].status == "awaiting_company"
+    assert len(runs) == 2 and runs[0].status == "awaiting_company"
+    # Every page is read: the first with no marker, the next after it, the status filter on both.
+    assert [p.get("after") for p in seen] == [None, "m1"]
+    assert all(p["status"] == "awaiting_company" for p in seen)
 
 
 def test_flow_run_by_id(config):
