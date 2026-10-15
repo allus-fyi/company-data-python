@@ -463,12 +463,13 @@ def test_change_document_status_changed_carries_action(decrypt_value):
     assert chg.note is None  # no cancellation note on a sign event
 
 
-def test_change_document_status_changed_carries_cancel_note(decrypt_value):
+def test_change_document_status_changed_carries_cancel_note(decrypt_value, encrypt_for_key):
     from allus_company_data.models import Change
 
     body = {"changes": [{
         "id": "chg-cancel", "event": "document_status_changed",
-        "person_user_id": "u-2", "action": "cancelled", "note": "Too expensive",
+        "person_user_id": "u-2", "action": "cancelled",
+        "note": json.dumps(encrypt_for_key("Too expensive")),
         "document_id": "doc-9", "status": "ended", "at": "2026-06-30T10:00:00Z",
     }]}
     [chg] = Change.list_from_api(body, type_for_slug=lambda s: None, field_types=_test_field_types, decrypt_value=decrypt_value)

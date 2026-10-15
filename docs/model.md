@@ -200,6 +200,8 @@ class Change:
 | `field_updated` | `slug` + decrypted `value` (+ `live`); binary → a lazy `BinaryHandle` |
 | `field_deleted` | `slug`, no value |
 | `consent_accepted` / `consent_declined` | `slug` |
+| `document_status_changed` | `document_id`, `status`, `action`, `signer_first_name`, `signer_last_name`, `signer_name_verified`, `note`; no slot. The names and `note` arrive encrypted to the service key and are DECRYPTED by the SDK |
+| `document_sealed` | `document_id`, `sealed_at`, `plain_sha256`; no slot. Emitted when the platform seals a file document, never for a JSON contract |
 | `message_received` | `connection_id`, `message_id`, `person_public_key` + `message_body` (the DECRYPTED message text); no slot. Person→company only — a broadcast raises no event |
 
 The event's ciphertext is carried under `body`. It is never `value`: on every other

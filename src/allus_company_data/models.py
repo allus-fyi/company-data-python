@@ -576,18 +576,18 @@ class Change:
     slug: Optional[str] = None
     value: Any = None
     live: Optional[bool] = None
-    document_id: Optional[str] = None  # set on document_status_changed
+    document_id: Optional[str] = None  # set on document_status_changed and document_sealed
     status: Optional[str] = None       # set on document_status_changed
     action: Optional[str] = None       # set on document_status_changed: signed | accepted | cancelled
-    note: Optional[str] = None         # set on document_status_changed: the person's optional cancellation note
+    note: Optional[str] = None         # set on document_status_changed: the person's optional cancellation note, decrypted from service-key ciphertext
     method: Optional[str] = None       # set on a signature: biometric | twofa | email | custodian
     content_sha256: Optional[str] = None  # set on a signature: SHA-256 of the signed content
     signed_at: Optional[str] = None    # set on a signature: ISO timestamp the signature was recorded
     cancel_effective_date: Optional[str] = None  # set on a cancelled document_status_changed: ISO date the cancellation takes effect
-    sealed_at: Optional[str] = None    # set on document_status_changed: when the platform seal was applied; null until sealed
-    plain_sha256: Optional[str] = None  # set on document_status_changed: SHA-256 of the document's unencrypted PDF bytes; null on a JSON contract
-    signer_first_name: Optional[str] = None  # set on document_status_changed: the signature's own signer evidence
-    signer_last_name: Optional[str] = None
+    sealed_at: Optional[str] = None    # set on document_sealed: when the platform seal was applied
+    plain_sha256: Optional[str] = None  # set on document_sealed: SHA-256 of the document's unencrypted PDF bytes (lowercase hex)
+    signer_first_name: Optional[str] = None  # set on document_status_changed: the signature's own signer evidence, decrypted from service-key ciphertext
+    signer_last_name: Optional[str] = None   # set on document_status_changed: decrypted from service-key ciphertext
     signer_name_verified: Optional[bool] = None  # true iff the submitted name matched the signer's verified ID name
     request_id: Optional[str] = None   # set on connection_request_accepted | connection_request_rejected
     public_key_sha256: Optional[str] = None  # set on key_rotated — SHA-256 fingerprint of the person's NEW public key
@@ -644,6 +644,27 @@ class Change:
             if cipher is not None:
                 message_body = decrypt_value(cipher)
 
+        is_document_status = event == "document_status_changed"
+        note: Optional[str] = None
+        signer_first_name: Optional[str] = None
+        signer_last_name: Optional[str] = None
+        if is_document_status:
+            # The signer names and the cancellation note are encrypted for the SERVICE key,
+            # each a wrapper serialized as a JSON string, so the ordinary decrypt opens them.
+            # An XML body renders a null member as an empty element, which decodes to "",
+            # so an empty string is treated as absent and not decrypted.
+            cipher = obj.get("note")
+            if cipher is not None and cipher != "":
+                note = decrypt_value(cipher)
+            cipher = obj.get("signer_first_name")
+            if cipher is not None and cipher != "":
+                signer_first_name = decrypt_value(cipher)
+            cipher = obj.get("signer_last_name")
+            if cipher is not None and cipher != "":
+                signer_last_name = decrypt_value(cipher)
+
+        is_sealed = event == "document_sealed"
+
         return cls(
             id=obj.get("id"),
             event=event,
@@ -660,15 +681,15 @@ class Change:
             if event in ("document_status_changed", "2fa_challenge_completed")
             else None,
             action=obj.get("action") if event == "document_status_changed" else None,
-            note=obj.get("note") if event == "document_status_changed" else None,
+            note=note,
             method=obj.get("method") if event == "document_status_changed" else None,
             content_sha256=obj.get("content_sha256") if event == "document_status_changed" else None,
             signed_at=obj.get("signed_at") if event == "document_status_changed" else None,
             cancel_effective_date=obj.get("cancel_effective_date") if event == "document_status_changed" else None,
-            sealed_at=obj.get("sealed_at") if event == "document_status_changed" else None,
-            plain_sha256=obj.get("plain_sha256") if event == "document_status_changed" else None,
-            signer_first_name=obj.get("signer_first_name") if event == "document_status_changed" else None,
-            signer_last_name=obj.get("signer_last_name") if event == "document_status_changed" else None,
+            sealed_at=obj.get("sealed_at") if is_sealed else None,
+            plain_sha256=obj.get("plain_sha256") if is_sealed else None,
+            signer_first_name=signer_first_name,
+            signer_last_name=signer_last_name,
             signer_name_verified=_coerce_bool(obj.get("signer_name_verified")) if event == "document_status_changed" else None,
             request_id=obj.get("request_id")
             if event in ("connection_request_accepted", "connection_request_rejected")

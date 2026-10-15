@@ -592,10 +592,12 @@ A change-feed / webhook event.
 | Attribute | Meaning |
 |-----------|---------|
 | `id` | **The stable server change-row id — your dedup key** (captured before the server delete). |
-| `event` | `connection_created`, `connection_deleted`, `field_updated`, `field_deleted`, `consent_accepted`, `consent_declined`, `document_status_changed`, `message_received`. |
+| `event` | `connection_created`, `connection_deleted`, `field_updated`, `field_deleted`, `consent_accepted`, `consent_declined`, `document_status_changed`, `document_sealed`, `message_received`. |
 | `person_id` | The person the change is about (may be `None`). |
 | `slug`, `value`, `live` | Present only on `field_updated`; `value` is typed exactly like `Value.value` (incl. a lazy `BinaryHandle` for binaries). Connection/consent/document events carry no slot/value. |
-| `document_id`, `status` | Present only on `document_status_changed` — which document moved lifecycle state and to what (no slug/value). See [Company documents](#company-documents). |
+| `document_id`, `status` | `document_id` is present on `document_status_changed` and `document_sealed`; `status` only on `document_status_changed` — which document moved lifecycle state and to what (no slug/value). See [Company documents](#company-documents). |
+| `signer_first_name`, `signer_last_name`, `signer_name_verified`, `note` | Present only on `document_status_changed`. The names and `note` arrive encrypted to your service key; the SDK decrypts them, so these are plaintext. |
+| `sealed_at`, `plain_sha256` | Present only on `document_sealed` — when the platform sealed a file document, and the SHA-256 of its unencrypted PDF bytes. |
 | `connection_id`, `message_id`, `person_public_key`, `message_body` | Present only on `message_received` — a person messaged your service. `message_body` is the **decrypted** text. See [Messaging](#messaging). |
 | `verified`, `verified_at`, `verified_expires_at` | Present on `field_updated`, with the same meaning as on `Value`. |
 | `verified_method`, `verified_provider`, `verification_id` | The proof metadata, same meaning and same all-or-none rule as on `Value`. |
@@ -958,16 +960,24 @@ account's verified ID name) beside its existing `action`, `method`, `content_sha
 When someone advances one of your documents (e.g. signs it), the platform emits a
 **`document_status_changed`** change. In a `process_changes` handler it carries
 `.document_id` and `.status` (and **no** `slug`/`value` — it's a lifecycle event,
-not a field value). A transition to `active` additionally carries the same seal
-state the document read carries — `.sealed_at`, `.plain_sha256`,
-`.signer_first_name`, `.signer_last_name`, `.signer_name_verified` — so you never
-need a follow-up `document(id)` call just to learn a run sealed:
+not a field value), plus the acting signer's `.signer_first_name`,
+`.signer_last_name`, `.signer_name_verified` and the person's optional cancellation
+`.note`. The names and the note arrive encrypted to your service key; the SDK
+decrypts them, so you read plaintext.
+
+When the platform seals a file document (never a JSON contract) it emits a separate
+**`document_sealed`** change carrying `.document_id`, `.sealed_at` and
+`.plain_sha256`, so you never need a follow-up `document(id)` call just to learn a
+document sealed. A webhook receives it only when it subscribes to `document_sealed` (or has an empty event filter, which receives every event);
+a subscription to `document_status_changed` alone does not deliver it.
 
 ```python
 def handle(change):
     if change.event == "document_status_changed":
         # the document moved lifecycle state (offering → ready_to_sign → active → …)
         on_document_status(change.document_id, change.status)
+    elif change.event == "document_sealed":
+        on_document_sealed(change.document_id, change.sealed_at, change.plain_sha256)
     elif change.event == "field_updated":
         store(change.person_id, change.slug, change.value)
 
