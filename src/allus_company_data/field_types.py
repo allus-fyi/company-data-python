@@ -293,6 +293,7 @@ class FieldTypeRegistry:
                 "parent": None,
                 "label": field_type,
                 "is_system": False,
+                "system_only": False,
                 "known": False,
                 "input": None,
                 "lane": None,
@@ -319,6 +320,7 @@ class FieldTypeRegistry:
             "parent": row.get("parent"),
             "label": row.get("label") or field_type,
             "is_system": bool(row.get("is_system")),
+            "system_only": bool(row.get("system_only")),
             "known": True,
             "input": None,
             "lane": None,
@@ -422,14 +424,36 @@ class FieldTypeRegistry:
             return [str(o) for o in supplied_options]
         return None
 
+    def _is_system_only(self, field_type: Optional[str]) -> bool:
+        """Whether this type is written by the platform alone.
+
+        Read off the type's own row, never inherited; a type the registry does not
+        carry is not system-only. Such a type is in no derived set.
+        """
+        return self.resolve(field_type)["system_only"]
+
     def requestable_types(self) -> List[str]:
-        """The types a contact field, a service request row or an admin field may declare."""
-        return [t for t in self.types() if not self.is_option_less_choice(t)]
+        """The types a contact field, a service request row or an admin field may declare.
+
+        Every type except an option-less choice type and a system-only type.
+        """
+        return [
+            t
+            for t in self.types()
+            if not self.is_option_less_choice(t) and not self._is_system_only(t)
+        ]
 
     def flow_types(self) -> List[str]:
-        """The requestable set plus the option-less choice types, whose options a flow element supplies."""
+        """The requestable set plus the option-less choice types, whose options a flow element supplies.
+
+        A system-only type is in neither half.
+        """
         out = self.requestable_types()
-        return out + [t for t in self.types() if self.is_option_less_choice(t)]
+        return out + [
+            t
+            for t in self.types()
+            if self.is_option_less_choice(t) and not self._is_system_only(t)
+        ]
 
     def claimable_types(self) -> List[str]:
         """The requestable set on the ``inline`` lane.

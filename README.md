@@ -476,6 +476,14 @@ never exposed, so there is no source slug, no `field_id` and no source type to r
 via `.raw`. For a binary slot the API resolves slot → source → file itself, so the bytes you fetch
 are the answering field's whatever type that field carries.
 
+**The derived sets.** `requestable_types()` (what a request row may declare), `flow_types()` (that set plus the
+option-less choice types a flow element supplies options for) and `claimable_types()` (the requestable
+types on the `inline` lane) leave out a SYSTEM-ONLY type — one the platform alone writes.
+`resolve(type)["system_only"]` reads that flag off the type's own row (never inherited; false for a type the
+registry does not carry). `id_selfie`, the ID-check selfie, is one: no company configures a
+request row of it, and it reaches a service only as the `age_scan_selfie` row a venue's age-scan
+toggle adds — a document-lane value, so a lazy `BinaryHandle` like any other.
+
 **A CHOICE type's options.** `select` and `multiselect` carry no options of their own — a flow
 element supplies them — so `validate` / `is_field_value_valid` / `field_value_error` take an
 optional third argument, the caller's own option list. The ROW's resolved options govern whenever
